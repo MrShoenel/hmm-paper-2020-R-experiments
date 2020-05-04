@@ -1,4 +1,6 @@
 my.cnf
+notebooks/*.pdf
+notebooks/*.docx
 
 # History files
 .Rhistory
