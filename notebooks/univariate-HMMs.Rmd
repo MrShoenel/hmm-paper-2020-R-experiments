@@ -1,0 +1,507 @@
+---
+title: "Experiments for RQ 5"
+output:
+  html_document:
+    df_print: kable
+    number_sections: true
+  html_notebook: default
+  pdf_document: default
+  word_document: default
+---
+
+# Research Question 5
+
+The question is: ___"What is the impact of univariate first-order Hidden Markov Models for commit classification?"___
+
+For this experiment, for the training, we will rely on the dataset __`treeX_L`__, which is a hierarchical dataset that features some of the commits' as labelled by Levin et al. and adjacent commits labelled by us, using detailed re-engineered rules. This way, we get a few _chains_ of commits. Each commit in the __`treeX_L`__ dataset is labelled, and has the extended attributes attached. We cannot use the attributes from __`x1151`__, as the commits labelled in that dataset are non-consecutive.
+
+The __`treeX_L`__ dataset has about 287 commits from __`x1151`__ where we built chains around. We will use those for training. Then, we take the remaining commits from __`x1151`__ and build chains of them as well, using only preceding commits and extended attributes. We will use this dataset for (Viterbi-) inferencing, as it does not require labels on the preceding commits. Instead, for the current commit and random variable, we look up which event the value corresponds to, and emulate that event. That way we can measure how well a commit's label can be predicted using previous generations of extended attributes. We have built a couple of SQL-views to help with the process:
+* __`rq5_non_treex`__: Holds those commit-IDs and labels that were _NOT_ labelled in __`treeX`__
+* __`rq5_non_treex_0_gen`__: Takes all the youngest commits from the next view and returns their labels
+* __`rq5_non_treex_5_gens`__: Chained-together commit-IDs over 5 generations; i.e. the IDs from __`rq5_non_treex`__ were taken, and then chains of length 5 were built. All commits involved were non-merge commits.
+* __`rq5_non_treex_0_gen_gex`__: Exactly like, __`rq5_non_treex_0_gen`__, but includes the extended properties from the __`gtools_ex`__ dataset
+* __`rq5_non_treex_5_gens_gex`__: Taking all child- and parent-commit-IDs from __`rq5_non_treex_5_gens`__, and joining them with __`gtools_ex`__, to build full commits
+
+We are going to analyze those chains, in order to construct state-transition matrices, and initial state probability distribution matrices. Then, for each of the features, using some resolution, we will discretize the feature and fit a univariate HMM. Then we will learn more about which features are suitable for labelling commits based on their predecessor.
+
+
+```{r warning=FALSE}
+source("../helpers.R")
+install.packagesCond("knitr")
+knitr::opts_chunk$set(rows.print=25, cols.print=15)
+```
+
+# Prepare the datasets and functions
+We will load the data from the view `rq5_treex`. Then, we will build a dictionary so that it becomes easier to connect commits to their siblings.
+
+```{r warning=FALSE}
+install.packagesCond("caret")
+library("caret")
+install.packagesCond("e1071")
+library("e1071")
+install.packagesCond("HMM")
+library("HMM")
+
+treeXL <- getDataset("rq5_treex", removeUnwantedColums = FALSE) # we do this manually
+treeXL$label <- as.factor(treeXL$label)
+treeXL$project <- as.factor(treeXL$project)
+
+removeNames <- c(
+  "branch", "reasonOrRule", "RepoPathOrUrl",
+  "AuthorName", "CommitterName", "AuthorTime",
+  "CommitterTime", "Message",
+  "AuthorEmail", "CommitterEmail",
+  "AuthorNominalLabel", "CommitterNominalLabel")
+treeXL <- treeXL[, !names(treeXL) %in% removeNames]
+```
+
+The base-dataset `treeX_L` is now prepared. However, we want a list of chains of commits. Generating these is next. From this indexed list, we can build chains. The begin of a chain is marked by a commit that does not find a parent itself in the loaded dataset. Please note that some commits are in fact the initial commits on their branch, but this is not a necessity.
+
+## Builder for Commit chains
+We will define a function, that build a list of chains of commits. The input is a dataset that contains commits that carry both their own ID and the ID of their parent.
+
+
+```{r}
+# 'data' needs to be data.frame with commits (i.e., not a list)
+buildCommitChains <- function(data, idCol, parentIdCol, returnOnlyInitial = F) {
+  commitIds <- unique(data[[idCol]])
+  parentIds <- unique(data[[parentIdCol]])
+  chains <- list()
+  
+  initialIds <- commitIds[!(data$ParentCommitSHA1s %in% commitIds)]
+  initialCommits <- data[data[[idCol]] %in% initialIds, ]
+  
+  if (returnOnlyInitial) {
+    return(initialCommits)
+  }
+  
+  dataByParentId <- list()
+  for (i in 1:nrow(data)) {
+    commit <- data[i, ]
+    dataByParentId[[commit$ParentCommitSHA1s]] <- commit
+  }
+  
+  for (i in 1:nrow(initialCommits)) {
+    parent <- initialCommits[i, ]
+    chain <- data.frame(parent)
+    
+    parentId <- parent[[idCol]]
+    while (TRUE) {
+      child <- data[data[[parentIdCol]] == parentId, ]
+      
+      if (nrow(child) != 1) {
+        break
+      }
+      
+      chain <- rbind(chain, child)
+      parentId <- child[[idCol]]
+    }
+    
+    chains[[parent[[idCol]]]] <- chain
+  }
+  
+  return(chains)
+}
+```
+
+```{r}
+treeXinitialCommits <- buildCommitChains(treeXL, "commitId", "ParentCommitSHA1s", returnOnlyInitial = TRUE)
+treeXChains <- buildCommitChains(treeXL, "commitId", "ParentCommitSHA1s", returnOnlyInitial = FALSE)
+```
+
+
+# HMM Experiments
+Now we have sufficiently prepared the data, let's use it to create univariate HMMs.
+
+## The non-treeX commits
+Those we will fetch now, although they are only needed later when we compute discrete events from one of the random variables.
+
+```{r}
+nonTreeXwithGex <- getDataset("rq5_non_treex_gex", removeUnwantedColums = F)
+treeXall5GensFlat <- getDataset("rq5_non_treex_5_gens_gex")
+```
+
+## Initial State probabilities
+Here, we define the (empirical) probabilities of any of the chains starting in one the states `a,c,p`. This is straightforward, as we only need to look at the distribution of the variable `treeXinitialCommits`.
+
+```{r}
+temp <- treeXL$label
+tempTable <- table(temp)
+startProbs <- tempTable / sum(tempTable)
+startProbs
+# Show the distribution
+hist(as.numeric(temp))
+tempTable
+states <- names(tempTable)
+states
+```
+
+## State transition probabilities
+Again, we do this empirically, by walking each chain of commits and counting how often each state transitions into each other state.
+
+
+```{r}
+transProbs <- matrix(nrow = length(states), ncol = length(states), data = 0)
+rownames(transProbs) <- states
+colnames(transProbs) <- states
+
+
+for (chain in names(treeXChains)) {
+  # a dataframe with parent on top, going down to the children
+  parentDs <- treeXChains[[chain]]
+  
+  for (i in 1:(nrow(parentDs) - 1)) {
+    parent <- parentDs[i, ]
+    child <- parentDs[i + 1, ]
+    
+    # In our matrix, we have parents as row names, and children as column names
+    pIdx <- match(as.character(parent$label), states)
+    cIdx <- match(as.character(child$label), states)
+    
+    # Now increase the counter in cell pIdx,cIdx by one, marking an observed
+    # transition between these two states
+    transProbs[pIdx, cIdx] <- transProbs[pIdx, cIdx] + 1
+  }
+}
+
+transProbs
+sum(transProbs)
+
+# Next thing, we have to normalize each row in the matrix so that its sum is 1:
+for (state in states) {
+  transProbs[state, ] <- transProbs[state, ] / sum(transProbs[state, ])
+}
+transProbs
+```
+
+## Emission probabilities
+For these one-dimensional univariate HMM experiments, we are going to discretize all features and try an HMM on each of them. All of our features (except for "Density" and "AffectedFilesRatioNet") are discrete, positive and follow a geomtric distribution. We will put them into buckets, which will correspond to events.
+
+We will cut off the very large values (at the end of the kurtosis) and put them into a final bucket. The first n buckets will be generated by using a range that is delimited by the smallest value, and the `97.5`th percentile.
+
+```{r}
+generateBucket <- function(data, numBuckets, inclMinVal = NULL, exclMaxVal = NULL) {
+  if (is.null(inclMinVal)) {
+    inclMinVal <- min(data)
+  }
+  if (is.null(exclMaxVal)) {
+    exclMaxVal <- max(data)
+  }
+  
+  dataCut <- data[data >= inclMinVal & data < exclMaxVal]
+  dataRange <- max(exclMaxVal) - min(dataCut)
+  
+  # We will prepend a bucket for all values < inclMinVal
+  # and append one bucket for all values >= exclMaxVal
+  dataStep <- dataRange / (numBuckets - 2)
+  
+  allRanges <- list(c(.Machine$double.xmin, inclMinVal))
+  
+  intStart <- min(dataCut)
+  intStop <- intStart + dataStep
+  for (i in c(2:(numBuckets))) {
+    # Generate an interval [intStart, intStop)
+    allRanges[[i]] <- c(intStart, intStop)
+    
+    intStart <- intStart + dataStep
+    intStop <- intStop + dataStep
+  }
+  
+  allRanges[[numBuckets]] <- c(exclMaxVal, .Machine$double.xmax)
+  
+  return(allRanges)
+}
+
+# 'data' must be a vector with the data
+# 'dataState' must be a vector that assigns a state to each value in data
+generateEmmissionProbMatrix <- function(states, buckets, data, dataState) {
+  eProbs <- matrix(nrow = length(states), ncol = length(buckets), data = 0)
+  states <- as.character(states)
+  eNames <- c()
+  for (i in 1:length(buckets)) {
+    eNames <- c(eNames, paste("E", i, sep = "_"))
+  }
+  
+  colnames(eProbs) <- eNames
+  rownames(eProbs) <- states
+  
+  for (state in states) {
+    temp <- data[as.character(dataState) == state]
+    
+    for (bIdx in 1:length(buckets)) {
+      # range, as [inc, ex)
+      r <- buckets[[bIdx]]
+      eName <- eNames[bIdx]
+      eProbs[state, eName] <- eProbs[state, eName] +
+        length(temp[temp >= r[1] & temp < r[2]])
+    }
+  }
+  
+  for (state in states) {
+    eSum <- sum(eProbs[state, ])
+    if (eSum > 0) {
+      eProbs[state, ] <- eProbs[state, ] / eSum
+    }
+  }
+  
+  return(eProbs)
+}
+```
+
+Now we will select the features that we plan on discretize into events.
+
+```{r}
+selectedFeatures <- names(nonTreeXwithGex)
+selectedFeatures <- selectedFeatures[grepl("^(Number|Minutes|Dens|Aff)", selectedFeatures)]
+```
+
+
+## Evaluate univariate HMM models
+Let's define a function that runs various models on a feature and reports the accuracy.
+
+```{r}
+eventNameForValue <- function(buckets, eventNames, value) {
+  for (i in 1:length(buckets)) {
+    valRange <- buckets[[i]]
+    if (value >= valRange[1] & value < valRange[2]) {
+      return(eventNames[i])
+    }
+  }
+  stop("Should not get here!")
+}
+
+rq5_treex_and_non_treex <- getDataset("rq5_treex_and_non_treex", FALSE)
+```
+
+```{r}
+evalHmmModel <- function(states, startProbs, startProbsName, transProbs, transProbsName, data, chains, featureCol, featureLabelCol, bucketLength, generateBucket, generateEmmissionProbMatrix) {
+  exclVal <- quantile(data[, featureCol], c(1 - (1 / bucketLength)))
+  buckets <- generateBucket(data[, featureCol], bucketLength, NULL, exclVal)
+  
+  eProbs <- generateEmmissionProbMatrix(
+    states, buckets, data[, featureCol], data[, featureLabelCol])
+  eNames <- colnames(eProbs)
+  
+  hmm <- initHMM(
+    states, eNames, startProbs, transProbs, emissionProbs = eProbs)
+  
+  listChainNames <- c()
+  listZeroR <- c()
+  listAcc <- c()
+  listKappa <- c()
+  listLevinCorrect <- c()
+  listLastcorrect <- c()
+  theFactor <- factor(c(), levels = states)
+  
+  for (chainName in names(chains)) {
+    listChainNames <- c(listChainNames, chainName)
+    chain <- chains[[chainName]] # a data.frame
+    
+    events <- c()
+    trueLabels <- c()
+    for (i in 1:nrow(chain)) {
+      commit <- chain[i, ]
+      events <- c(events, eventNameForValue(buckets, eNames, commit[[featureCol]]))
+      trueLabels <- c(trueLabels, as.character(commit[[featureLabelCol]]))
+    }
+    
+    predLabels <- factor(viterbi(hmm, events), levels = levels(theFactor))
+    trueLabels <- factor(trueLabels, levels = levels(theFactor))
+    
+    
+    listZeroR <- c(listZeroR,
+      # We are computing the zeroR for the current chain!
+      confusionMatrix(predictZeroR(trueLabels), trueLabels)$overall[["Accuracy"]])
+    
+    cm <- confusionMatrix(predLabels, trueLabels, mode = "everything")
+    listAcc <- c(listAcc, cm$overall[["Accuracy"]])
+    listKappa <- c(listKappa, cm$overall[["Kappa"]])
+    listLastcorrect <- c(listLastcorrect, tail(predLabels, n=1) == tail(trueLabels, n=1))
+    
+    # Let's check if the commit labelled by Levin et al. was correct!
+    levinCommitNumber <- which(chain$labelledBefore == 1)
+    levinCorrValue <- 0
+    if (length(levinCommitNumber) == 0) {
+      levinCorrValue <- -1 # no such commit (some chains may be labelled w/o such a commit)
+    } else {
+      if (predLabels[levinCommitNumber] == trueLabels[levinCommitNumber]) {
+        levinCorrValue <- 1
+      } else {
+        levinCorrValue <- 0
+      }
+    }
+    
+    listLevinCorrect <- c(listLevinCorrect, levinCorrValue)
+  }
+  
+  len <- length(listZeroR)
+  return(data.frame(
+    event = rep(featureCol, len),
+    bucketLen = rep(bucketLength, len),
+    startProbsName = rep(startProbsName, len),
+    transProbsName = rep(transProbsName, len),
+    
+    chainName = listChainNames,
+    zeroR = listZeroR,
+    accuracy = listAcc,
+    kappa = listKappa,
+    lastCorr = listLastcorrect,
+    levinCorr = listLevinCorrect,
+    
+    stringsAsFactors = FALSE
+  ))
+}
+```
+
+
+### Permutations
+Within each evaluation, we will test all chains, and each evaluation shall return a dictionary, that contains the name of the feature, a list of zeroR-values, a list of accuracies and a list of Kappas (where each of these values corresponds to one chain).
+
+We have for degrees of freedom: Transition probabilities, start probabilities, Bucket lengths, and the events.
+For the transition probs. we will use the empirical ones, then we will use a matrix where all values are the same, and we will use 5 randomly generated matrices (7 different). We will do a similar thing for the start probabilities (emp., random, 5x random). We will use 20 bucket lengths, from 10 to 100 (steps of 5). Then, lastly, we pass in one of the ~25 events. This will yield 7 x 7 x 20 x 25 evaluations (~25k).
+
+
+```{r}
+genTransProbs <- function(random = TRUE, labels = c('a', 'c', 'p')) {
+  l <- length(labels)
+  m <- 0
+  if (random) {
+    m <- t(replicate(l, runif.sum(l)))
+  } else {
+    m <- t(replicate(l, rep(1/l, l)))
+  }
+  
+  rownames(m) <- labels
+  colnames(m) <- labels
+  return(m)
+}
+
+genStartProbs <- function(random = TRUE, labels = c('a', 'c', 'p')) {
+  l <- length(labels)
+  if (random) {
+    return(runif.sum(l))
+  }
+  return(rep(1/l, l))
+}
+```
+
+```{r}
+runif.sum <- function(n){
+  x <- sort(runif(n-1))
+  c(x,1) - c(0,x)
+}
+
+
+set.seed(1337)
+
+dofStartProbs <- list(
+  emp = as.vector(startProbs),
+  same = genStartProbs(random = FALSE),
+  r1 = genStartProbs(),
+  r2 = genStartProbs(),
+  r3 = genStartProbs(),
+  r4 = genStartProbs(),
+  r5 = genStartProbs()
+)
+
+set.seed(1337)
+dofTransProbs <- list(
+  emp = transProbs,
+  same = genTransProbs(random = FALSE),
+  r1 = genTransProbs(),
+  r2 = genTransProbs(),
+  r3 = genTransProbs(),
+  r4 = genTransProbs(),
+  r5 = genTransProbs()
+)
+
+dofBuckets <- seq(10, 100, 5)
+
+dofEvents <- c(selectedFeatures)
+```
+
+Let's run all the permutations:
+```{r}
+install.packagesCond("foreach")
+library("foreach")
+install.packagesCond("parallel")
+library("parallel")
+install.packagesCond("doParallel")
+library("doParallel")
+
+
+if (file.exists("allResults.rds")) {
+  allResults <- readRDS("allResults.rds")
+} else {
+  cluster <- makeCluster(detectCores())
+  registerDoParallel(cluster)
+  
+  allResults <- foreach(
+    eventName = dofEvents, .packages = c("caret", "parallel", "doParallel", "foreach", "HMM"), .combine = "rbind") %dopar%
+  {
+    eventResults <- data.frame(matrix(nrow = 0, ncol = 10), stringsAsFactors = FALSE)
+    colnames(eventResults) <- c(
+      "event", "bucketLen", "startProbsName", "transProbsName", "chainName", "zeroR", "accuracy", "kappa", "lastCorr", "levinCorr")
+  
+    for (spName in names(dofStartProbs)) {
+      for (tpName in names(dofTransProbs)) {
+        for (bucketLength in dofBuckets) {
+          result <- NULL
+          
+          errDf <- tryCatch({
+            result <- evalHmmModel(states, dofStartProbs[[spName]], spName, dofTransProbs[[tpName]], tpName, rq5_treex_and_non_treex, treeXChains, eventName, "label", bucketLength, generateBucket, generateEmmissionProbMatrix)
+          }, error = function(cond) {
+            return(data.frame(
+              event = eventName,
+              bucketLen = bucketLength,
+              startProbsName = spName,
+              transProbsName = tpName,
+              
+              chainName = toString(cond),
+              zeroR = NaN,
+              accuracy = NaN,
+              kappa = NaN,
+              lastCorr = FALSE,
+              levinCorr = FALSE
+            ))
+          })
+          
+          if (is.data.frame(errDf)) {
+            result <- errDf
+          }
+          
+          eventResults <- rbind(eventResults, result)
+        }
+      }
+    }
+    
+    return(eventResults)
+  }
+  stopCluster(cluster)
+  
+
+  allResults$event <- as.factor(allResults$event)
+  allResults$startProbsName <- as.factor(allResults$startProbsName)
+  allResults$transProbsName <- as.factor(allResults$transProbsName)
+  allResults$chainName <- as.factor(allResults$chainName)
+  
+  saveRDS(allResults, "allResults.rds")
+}
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

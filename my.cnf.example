@@ -1,0 +1,6 @@
+[experiments]
+user=YOUR_MYSQL_USER
+password=YOUR_MYSQL_PASS
+host=127.0.0.1
+port=3306
+database=comm_class
