@@ -50,7 +50,7 @@ get1stOrderCommits <- function() {
   
   # We get duplicate names that end in ..\d+,
   # and we replace those names by "_t1" (t-1)
-  colnames(ds) <- gsub("\\.\\.\\d+$", "_t1", colnames(ds))
+  colnames(ds) <- gsub("\\.\\.\\d+$", "_t_1", colnames(ds))
   
   dbClearResult(result)
   dbDisconnect(conn)
@@ -66,8 +66,8 @@ get2ndOrderCommits <- function() {
   # by order+1 and then rename using the schema from 1st-order.
   cn <- colnames(ds)
   l <- length(cn) / 3
-  names1st <- gsub("\\.\\.\\d+$", "_t1", cn[(l+1):(l*2)])
-  names2nd <- gsub("\\.\\.\\d+$", "_t2", cn[(l*2+1):(l*3)])
+  names1st <- gsub("\\.\\.\\d+$", "_t_1", cn[(l+1):(l*2)])
+  names2nd <- gsub("\\.\\.\\d+$", "_t_2", cn[(l*2+1):(l*3)])
   colnames(ds) <- c(cn[1:l], names1st, names2nd)
   
   dbClearResult(result)

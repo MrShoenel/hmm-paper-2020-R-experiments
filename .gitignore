@@ -1,6 +1,8 @@
 my.cnf
 notebooks/*.pdf
 notebooks/*.docx
+web/*
+vignettes/*
 
 # History files
 .Rhistory
