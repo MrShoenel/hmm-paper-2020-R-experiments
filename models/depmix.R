@@ -33,7 +33,7 @@ depmixGetMessages <- function() varMsg$get()
 #' @param featuresCdf character vector with names of features to build an
 #' eCDF for (only continuous features allowed).
 #' @return list of density functions, that follow the name-scheme
-#' "featureName_state_@dens@_".
+#' "featureName__@dens@__state".
 estimateDepmixDensities <- function(
   states, stateColumn, data = data.frame(), featuresPdfPmf = c(), featuresCdf = c()
 ) {
@@ -67,27 +67,25 @@ estimateDepmixDensities <- function(
         stop(paste("The feature", feat, "is not in the data.frame."))
       }
       
-      # variable_state_@dens@_
-      densFunName <- paste(
-        paste0(feat, state, sep = "_"),
-        "_@dens@_")
+      # variable__@dens@__state
+      densFunName <- paste(feat, state, sep = "__@dens@__")
       isDiscrete <- !is.numeric(data[[feat]])
       doEcdf <- feat %in% featuresCdf
       
       if (isDiscrete) {
-        estFuncs[[feat]] <- (function() {
+        estFuncs[[densFunName]] <- (function() {
           temp <- as.character(condData[[feat]])
           return(function(x) mmb::getProbForDiscrete(temp, x))
         })()
       } else if (doEcdf) {
-        estFuncs[[feat]] <- (function() {
+        estFuncs[[densFunName]] <- (function() {
           tryCatch({
             temp <- condData[[feat]]
             ecdf(temp)
           }, error=function(cond) function(x) 0)
         })()
       } else {
-        estFuncs[[feat]] <- (function() {
+        estFuncs[[densFunName]] <- (function() {
           pdf <- mmb::estimatePdf(condData[[feat]])
           return(function(x) pdf$fun(x))
         })()
@@ -259,9 +257,12 @@ computeDensitiesSum <- function(O_t, states, densities) {
   for (state in states) {
     densFactors <- c()
     for (densFunName in names(densities)) {
-      featName <- strsplit(densFunName, split = "_@dens@_")[[1]][1]
-      densFun <- densities[[densFunName]]
-      densFactors[[featName]] <- densFun(O_t[[featName]])
+      sp <- strsplit(densFunName, split = "__@dens@__")[[1]]
+      featName <- sp[1]
+      if (sp[2] == state) {
+        densFun <- densities[[densFunName]]
+        densFactors[[featName]] <- densFun(O_t[[featName]])
+      }
     }
     
     allJs[[state]] <- sum(densFactors)
