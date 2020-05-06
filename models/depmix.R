@@ -104,40 +104,10 @@ getTransprobs_1stOrder <- function(states, data, stateColumn) {
 
 
 
-#'
-#' @param t_1_label a character of the label of the State t-1.
-#' @param O_t data.frame with one row, holding a value for all
-#' the features the densities were estimated over. This row
-#' will be labeled and must not be contained in the other data.
-#' @return character the predicted label of the State t.
-#' 
-depmixInference_1stOrder <- function(states, initProbs = c(), transProbs = matrix(), data, colnameState, doEcdf = FALSE, t_1_label, O_t = data.frame()) {
-  if (!is.data.frame(data) || (nrow(data) < 2)) {
-    stop("Density estimation requires 2 or more data points.")
-  }
-  
-  if (length(initProbs) == 0) {
-    initProbs <- getInitialTransProbs(data = data, colnameState = colnameState)
-  }
-  
-  if (is.null(names(initProbs)) ||
-      length(setdiff(names(initProbs), unique(as.character(data[[colnameState]])))) > 0) {
-    stop("The initProbs are not correctly initialized and don't match the available states.")
-  } else if ((1 - sum(initProbs)) > 1e-12) {
-    stop("The initProbs do not sum to 1 by an epsilon of 1e-12.")
-  }
-  
-  df <- data[, !(colnames(data) %in% colnameState)]
-  densities <- estimateDensities(
-    data = df,
-    featuresPdf = if (doEcdf) c() else colnames(df),
-    featuresCdf = if (doEcdf) colnames(df) else c())
-  
-  
-}
-
-
-computeDensitiesProducts <- function(O_t, states, densities, smoothing = 0.1) {
+#' Computes the sum of densities, by taking a vector of density
+#' functions and computes the likelihood using an observation's
+#' random variables' values (similar to a dot-product).
+computeDensitiesSum <- function(O_t, states, densities, smoothing = 0.1) {
   # We have to compute the likelihood for all possible states
   # in order to find the maximum later.
   allJs <- c()
@@ -149,7 +119,7 @@ computeDensitiesProducts <- function(O_t, states, densities, smoothing = 0.1) {
       densFactors[[featName]] <- smoothing + densFun(O_t[[featName]])
     }
     
-    allJs[[state]] <- prod(densFactors)
+    allJs[[state]] <- sum(densFactors)
   }
   
   return(allJs)
@@ -157,9 +127,9 @@ computeDensitiesProducts <- function(O_t, states, densities, smoothing = 0.1) {
 
 
 
-#' Forward-algorithm for maximum-likelihood estimation of hidden states.
-#' Builds initial state- and transition-probabilities from the given
-#' data.
+#' 1st-order Forward-algorithm for maximum-likelihood estimation of
+#' hidden states. Builds initial state- and transition-probabilities
+#' from the given data.
 #' 
 #' @param states character vector with all possible states (labels).
 #' @param data data.frame with all known observations/states. This is
@@ -180,8 +150,15 @@ computeDensitiesProducts <- function(O_t, states, densities, smoothing = 0.1) {
 #' states. These need to be discrete.
 #' @param smoothing double, defaults to 0.1. This is Laplacian/Lidstone
 #' smoothing and a constant factor added to each density.
-depmixForward_1stOrder <- function(states, data, observations, stateColumn, smoothing = 0.1, doEcdf = FALSE) {
+#' @param doEcdf default FALSE, whether to use empirical CDF instead of
+#' empirical PDF for continuous features.
+#' @return character vector with most likely labels for the given ob-
+#' servations, in the same order.
+depmixForward_1stOrder <- function(
+  states, data, observations, stateColumn, smoothing = 0.1, doEcdf = FALSE)
+{
   w <- mmb::getWarnings()
+  # Because otherwise, mmb will likely warn a lot about scarce data.
   mmb::setWarnings(FALSE)
   
   df <- data[, ]
@@ -213,16 +190,21 @@ depmixForward_1stOrder <- function(states, data, observations, stateColumn, smoo
       (utils::head(observations, 1)[[stateColumn]] %in% states))
   {
     warning("Using short-form for special case.")
-    
-    O_t <- utils::head(observations, 1)
+    O_t_1 <- utils::head(observations, 1)
+    O_t <- utils::tail(observations, 1)
     # This is a named vector, we need to multiply each entry still
     # with the transition probability.
-    b_j_O_t <- computeDensitiesProducts(
+    b_j_O_t <- computeDensitiesSum(
       O_t = O_t, states = states, densities = densities, smoothing = smoothing)
-    state_t_1 <- O_t[[stateColumn]]
+    state_t_1 <- O_t_1[[stateColumn]]
     
     for (state in states) {
+      # Let's reuse this vector..
       b_j_O_t[[state]] <- b_j_O_t[[state]] * transProbs[state, state_t_1]
+    }
+    
+    if (depmixGetMessages()) {
+      print(b_j_O_t)
     }
     
     # Return the name of the state with highest likelihood:
@@ -237,28 +219,30 @@ depmixForward_1stOrder <- function(states, data, observations, stateColumn, smoo
   prevLh <- matrix(nrow = length(states), ncol = nrow(observations))
   rownames(prevLh) <- states
   
-  for (j in 1:nrow(observations)) {
+  for (i in 1:nrow(observations)) {
     # Those two have always to be done:
-    O_t <- observations[j, ]
-    b_j_O_t <- computeDensitiesProducts(
+    O_t <- observations[i, ]
+    b_j_O_t <- computeDensitiesSum(
       O_t = O_t, states = states, densities = densities, smoothing = smoothing)
     
-    # These are constant for every possible j (if j > 1):
+    # These are constant for every possible i (if i > 1):
     sumPrevLh <- 0
-    if (j > 1) {
-      sumPrevLh <- sum(prevLh[, j - 1])
+    if (i > 1) {
+      sumPrevLh <- sum(prevLh[, i - 1])
     }
     
     for (state in states) {
-      if (j == 1) {
+      if (i == 1) {
         # Compute \phi_1(j)
-        prevLh[state, j] <- initProbs[state] * b_j_O_t[[state]]
+        prevLh[state, i] <- initProbs[state] * b_j_O_t[[state]]
       } else {
         # Compute \phi_t(j)
+        temp <- 0
         for (state_t_1 in states) {
-          prevLh[state, j] <-
-            prevLh[state_t_1, j - 1] * transProbs[state, state_t_1] * b_j_O_t[[state]]
+          temp <- temp +
+            (prevLh[state_t_1, i - 1] * transProbs[state, state_t_1] * b_j_O_t[[state]])
         }
+        prevLh[state, i] <- temp / sumPrevLh
       }
     }
   }
@@ -272,6 +256,36 @@ depmixForward_1stOrder <- function(states, data, observations, stateColumn, smoo
   return(sapply(unname(apply(prevLh, 2, function(col) which.max(col))),
                 function(i) rownames(prevLh)[i]))
 }
+
+
+
+
+#' 2nd-order Forward-algorithm for maximum-likelihood estimation of
+#' hidden states. Builds initial state- and transition-probabilities
+#' from the given data.
+depmixForward_2ndOrder <- function(
+  states, data, observations, stateColumn, smoothing = 0.1, doEcdf = FALSE)
+{
+  
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
