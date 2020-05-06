@@ -18,6 +18,7 @@ output:
 source("../helpers.R")
 install.packagesCond("knitr")
 knitr::opts_chunk$set(rows.print=25, cols.print=15)
+source("../models/depmix.R")
 ```
 
 
