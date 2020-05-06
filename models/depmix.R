@@ -33,7 +33,7 @@ depmixGetMessages <- function() varMsg$get()
 #' @param featuresCdf character vector with names of features to build an
 #' eCDF for (only continuous features allowed).
 #' @return list of density functions, that follow the name-scheme
-#' \code{paste(featureName, state, sep = "_@dens@_")}.
+#' "featureName_state_@dens@_".
 estimateDepmixDensities <- function(
   states, stateColumn, data = data.frame(), featuresPdfPmf = c(), featuresCdf = c()
 ) {
@@ -67,7 +67,10 @@ estimateDepmixDensities <- function(
         stop(paste("The feature", feat, "is not in the data.frame."))
       }
       
-      densFunName <- paste(feat, state, sep = "_@dens@_")
+      # variable_state_@dens@_
+      densFunName <- paste(
+        paste0(feat, state, sep = "_"),
+        "_@dens@_")
       isDiscrete <- !is.numeric(data[[feat]])
       doEcdf <- feat %in% featuresCdf
       
@@ -142,7 +145,7 @@ getTransprobs_1stOrder <- function(states, data, stateColumn) {
   rownames(transprobs_1stOrder) <- states
   
   label_t_0 <- stateColumn
-  label_t_1 <- paste(stateColumn, "t_1", sep = "_")
+  label_t_1 <- gsub("t_0$", "t_1", label_t_0)
   
   df <- data[, ]
   df[label_t_0] <- as.character(df[[label_t_0]])
@@ -193,8 +196,8 @@ getTransprobs_2ndOrder <- function(states, data, stateColumn, returnTransprobsOn
   dimnames(transprobs_2ndOrder) <- list(states, states, states)
   
   label_t_0 <- stateColumn
-  label_t_1 <- paste(stateColumn, "t_1", sep = "_")
-  label_t_2 <- paste(stateColumn, "t_2", sep = "_")
+  label_t_1 <- gsub("t_0$", "t_1", label_t_0)
+  label_t_2 <- gsub("t_0$", "t_2", label_t_0)
   
   df <- data[, ]
   df[label_t_0] <- as.character(df[[label_t_0]])

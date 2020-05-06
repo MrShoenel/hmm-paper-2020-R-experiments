@@ -49,8 +49,19 @@ get1stOrderCommits <- function() {
   ds <- dbFetch(result)
   
   # We get duplicate names that end in ..\d+,
-  # and we replace those names by "_t1" (t-1)
+  # and we replace those names by "_t_1" (t-1)
   colnames(ds) <- gsub("\\.\\.\\d+$", "_t_1", colnames(ds))
+  
+  # Also, rename the other columns to have
+  # the suffix "_t_0":
+  temp <- colnames(ds)
+  m <- !grepl("_t_1", temp)
+  for (i in 1:length(temp)) {
+    if (m[i]) {
+      temp[i] <- paste(temp[i], "_t_0", sep = "")
+    }
+  }
+  colnames(ds) <- temp
   
   dbClearResult(result)
   dbDisconnect(conn)
@@ -69,6 +80,17 @@ get2ndOrderCommits <- function() {
   names1st <- gsub("\\.\\.\\d+$", "_t_1", cn[(l+1):(l*2)])
   names2nd <- gsub("\\.\\.\\d+$", "_t_2", cn[(l*2+1):(l*3)])
   colnames(ds) <- c(cn[1:l], names1st, names2nd)
+  
+  # Also, rename the other columns to have
+  # the suffix "_t_0":
+  temp <- colnames(ds)
+  m <- !grepl("_t_\\d", temp)
+  for (i in 1:length(temp)) {
+    if (m[i]) {
+      temp[i] <- paste(temp[i], "_t_0", sep = "")
+    }
+  }
+  colnames(ds) <- temp
   
   dbClearResult(result)
   dbDisconnect(conn)
