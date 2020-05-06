@@ -34,7 +34,7 @@ depmixGetMessages <- function() varMsg$get()
 #' eCDF for (only continuous features allowed).
 #' @return list of density functions, that follow the name-scheme
 #' \code{paste(featureName, state, sep = "_@dens@_")}.
-estimateDensities <- function(
+estimateDepmixDensities <- function(
   states, stateColumn, data = data.frame(), featuresPdfPmf = c(), featuresCdf = c()
 ) {
   if (length(states) == 0) {
@@ -246,7 +246,7 @@ getTransprobs_2ndOrder <- function(states, data, stateColumn, returnTransprobsOn
 #' @param O_t data.frame with one row, holding a value for each feature.
 #' @param states character vector of available states
 #' @param densities list of density functions, as obtained by @seealso
-#' \code{estimateDensities()}.
+#' \code{estimateDepmixDensities()}.
 #' @return named vector with computed and summed up densities
 #' for each state.
 computeDensitiesSum <- function(O_t, states, densities) {
@@ -319,7 +319,7 @@ depmixForward_1stOrder <- function(
   
   densityCols <- colnames(df)
   densityCols <- densityCols[!(densityCols %in% stateColumn)]
-  densities <- estimateDensities(
+  densities <- estimateDepmixDensities(
     states = states,
     stateColumn = stateColumn,
     data = df,
@@ -466,7 +466,7 @@ depmixForward_2ndOrder <- function(
   
   densityCols <- colnames(df)
   densityCols <- densityCols[!(densityCols %in% stateColumn)]
-  densities <- estimateDensities(
+  densities <- estimateDepmixDensities(
     states = states,
     stateColumn = stateColumn,
     data = df,
