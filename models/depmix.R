@@ -1,4 +1,5 @@
 #' Creates a closure over a variable and returns its getter and setter.
+#' 
 #' @author Sebastian Hönel <sebastian.honel@lnu.se>
 #' @param initVarVal the initial value of the closed variable.
 #' @keywords internal
@@ -19,6 +20,20 @@ depmixSetMessages <- function(enable = TRUE) varMsg$set(!!enable)
 depmixGetMessages <- function() varMsg$get()
 
 
+#' Creates conditional density functions for each feature of the data,
+#' segmented for by each state of the data. For continuous features,
+#' this estimates a PDF or eCDF, and for discrete features, it estimates
+#' a PMF.
+#' 
+#' @author Sebastian Hönel <sebastian.honel@lnu.se>
+#' @param states character vector of available states
+#' @param data data.frame with observations
+#' @param featuresPdfPmf character vector with names of features to build
+#' a PDF or PMF for.
+#' @param featuresCdf character vector with names of features to build an
+#' eCDF for (only continuous features allowed).
+#' @return list of density functions, that follow the name-scheme
+#' \code{paste(featureName, state, sep = "_@dens@_")}.
 estimateDensities <- function(
   states, stateColumn, data = data.frame(), featuresPdfPmf = c(), featuresCdf = c()
 ) {
@@ -75,6 +90,15 @@ estimateDensities <- function(
   return(estFuncs)
 }
 
+
+#' Compute the initial state probabilities.
+#' 
+#' @author Sebastian Hönel <sebastian.honel@lnu.se>
+#' @param data data.frame with observations and states assigned (i.e.,
+#' labeled data).
+#' @param stateColumn character, the name of the column holding the
+#' state/label.
+#' @return named vector with probabilities (sums to 1).
 getInitialStateProbs <- function(data, stateColumn) {
   
   probs <- c()
@@ -92,6 +116,7 @@ getInitialStateProbs <- function(data, stateColumn) {
 
 #' Creates transition probabilities for a 2nd-order dependency model.
 #' 
+#' @author Sebastian Hönel <sebastian.honel@lnu.se>
 #' @param states character vector of available states
 #' @param data data.frame with all known observations/states. This is
 #' labeled data, and the label is to be found in the column designated
@@ -137,6 +162,7 @@ getTransprobs_1stOrder <- function(states, data, stateColumn) {
 
 #' Creates transition probabilities for a 2nd-order dependency model.
 #' 
+#' @author Sebastian Hönel <sebastian.honel@lnu.se>
 #' @param states character vector of available states
 #' @param data data.frame with observations. Like for @seealso
 #' \code{getTransprobs_1stOrder()}, the data is expected to have additonal
@@ -210,7 +236,15 @@ getTransprobs_2ndOrder <- function(states, data, stateColumn, returnTransprobsOn
 #' Computes the sum of densities, by taking a vector of density
 #' functions and computes the likelihood using an observation's
 #' random variables' values (similar to a dot-product).
-computeDensitiesSum <- function(O_t, states, densities, smoothing = 0.1) {
+#' 
+#' @author Sebastian Hönel <sebastian.honel@lnu.se>
+#' @param O_t data.frame with one row, holding a value for each feature.
+#' @param states character vector of available states
+#' @param densities list of density functions, as obtained by @seealso
+#' \code{estimateDensities()}.
+#' @return named vector with computed and summed up densities
+#' for each state.
+computeDensitiesSum <- function(O_t, states, densities) {
   # We have to compute the likelihood for all possible states
   # in order to find the maximum later.
   allJs <- c()
@@ -219,7 +253,7 @@ computeDensitiesSum <- function(O_t, states, densities, smoothing = 0.1) {
     for (densFunName in names(densities)) {
       featName <- strsplit(densFunName, split = "_@dens@_")[[1]][1]
       densFun <- densities[[densFunName]]
-      densFactors[[featName]] <- smoothing + densFun(O_t[[featName]])
+      densFactors[[featName]] <- densFun(O_t[[featName]])
     }
     
     allJs[[state]] <- sum(densFactors)
@@ -251,8 +285,6 @@ computeDensitiesSum <- function(O_t, states, densities, smoothing = 0.1) {
 #' the short form: $\phi_t^1(i,j) = A_{ij} * b_j(O_t)$.
 #' @param stateColumn character, the name of the column holding the
 #' states. These need to be discrete.
-#' @param smoothing double, defaults to 0.1. This is Laplacian/Lidstone
-#' smoothing and a constant factor added to each density.
 #' @param doEcdf default FALSE, whether to use empirical CDF instead of
 #' empirical PDF for continuous features.
 #' @param returnLogLikelihood default FALSE, if true, returns the log-
@@ -260,7 +292,7 @@ computeDensitiesSum <- function(O_t, states, densities, smoothing = 0.1) {
 #' @return character vector with most likely labels for the given ob-
 #' servations, in the same order.
 depmixForward_1stOrder <- function(
-  states, data, observations, stateColumn, smoothing = 0.1,
+  states, data, observations, stateColumn,
   doEcdf = FALSE, returnLogLikelihood = FALSE)
 {
   w <- mmb::getWarnings()
@@ -301,7 +333,7 @@ depmixForward_1stOrder <- function(
     # This is a named vector, we need to multiply each entry still
     # with the transition probability.
     b_j_O_t <- computeDensitiesSum(
-      O_t = O_t, states = states, densities = densities, smoothing = smoothing)
+      O_t = O_t, states = states, densities = densities)
     state_t_1 <- O_t_1[[stateColumn]]
     
     for (state in states) {
@@ -333,7 +365,7 @@ depmixForward_1stOrder <- function(
     # Those two have always to be done:
     O_t <- observations[i, ]
     b_j_O_t <- computeDensitiesSum(
-      O_t = O_t, states = states, densities = densities, smoothing = smoothing)
+      O_t = O_t, states = states, densities = densities)
     
     # These are constant for every possible i (if i > 1):
     sumPrevLh <- 0
@@ -398,8 +430,6 @@ depmixForward_1stOrder <- function(
 #' the short form: $\phi_t^1(i,j) = A_{ij} * b_j(O_t)$.
 #' @param stateColumn character, the name of the column holding the
 #' states. These need to be discrete.
-#' @param smoothing double, defaults to 0.1. This is Laplacian/Lidstone
-#' smoothing and a constant factor added to each density.
 #' @param doEcdf default FALSE, whether to use empirical CDF instead of
 #' empirical PDF for continuous features.
 #' @param returnLogLikelihood default FALSE, if true, returns the log-
@@ -407,7 +437,7 @@ depmixForward_1stOrder <- function(
 #' @return character vector with most likely labels for the given ob-
 #' servations, in the same order.
 depmixForward_2ndOrder <- function(
-  states, data, observations, stateColumn, smoothing = 0.1,
+  states, data, observations, stateColumn,
   doEcdf = FALSE, returnLogLikelihood = FALSE)
 {
   w <- mmb::getWarnings()
@@ -451,7 +481,7 @@ depmixForward_2ndOrder <- function(
     # This is a named vector, we need to multiply each entry still
     # with the transition probability tensor later.
     b_j_O_t <- computeDensitiesSum(
-      O_t = O_t, states = states, densities = densities, smoothing = smoothing)
+      O_t = O_t, states = states, densities = densities)
     
     m <- transProbs_mapping
     state_t_1 <- m[O_t_1[[stateColumn]]]
@@ -493,7 +523,7 @@ depmixForward_2ndOrder <- function(
     # Those two have always to be done:
     O_t <- observations[i, ]
     b_j_O_t <- computeDensitiesSum(
-      O_t = O_t, states = states, densities = densities, smoothing = smoothing)
+      O_t = O_t, states = states, densities = densities)
     
     # These are constant for every possible i > 1:
     sumPrevLh <- 0 # inference first observation
@@ -555,30 +585,4 @@ depmixForward_2ndOrder <- function(
   return(sapply(unname(apply(prevLh, 2, function(col) which.max(col))),
                 function(i) rownames(prevLh)[i]))
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
