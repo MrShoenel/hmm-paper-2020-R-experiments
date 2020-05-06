@@ -152,10 +152,13 @@ computeDensitiesSum <- function(O_t, states, densities, smoothing = 0.1) {
 #' smoothing and a constant factor added to each density.
 #' @param doEcdf default FALSE, whether to use empirical CDF instead of
 #' empirical PDF for continuous features.
+#' @param returnLogLikelihood default FALSE, if true, returns the log-
+#' likelihood of the entire sequence.
 #' @return character vector with most likely labels for the given ob-
 #' servations, in the same order.
 depmixForward_1stOrder <- function(
-  states, data, observations, stateColumn, smoothing = 0.1, doEcdf = FALSE)
+  states, data, observations, stateColumn, smoothing = 0.1,
+  doEcdf = FALSE, returnLogLikelihood = FALSE)
 {
   w <- mmb::getWarnings()
   # Because otherwise, mmb will likely warn a lot about scarce data.
@@ -207,6 +210,10 @@ depmixForward_1stOrder <- function(
       print(b_j_O_t)
     }
     
+    if (returnLogLikelihood) {
+      return(log(sum(b_j_O_t)))
+    }
+    
     # Return the name of the state with highest likelihood:
     return(names(which.max(b_j_O_t)))
   }
@@ -251,6 +258,12 @@ depmixForward_1stOrder <- function(
   
   if (depmixGetMessages()) {
     print(prevLh)
+  }
+  
+  if (returnLogLikelihood) {
+    # The log-likelihood of the entire forecast is the sum over the
+    # logs of sums of \phi_t(j).
+    return(sum(apply(prevLh, 2, function(col) log(sum(col)))))
   }
   
   return(sapply(unname(apply(prevLh, 2, function(col) which.max(col))),
