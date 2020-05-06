@@ -77,7 +77,12 @@ estimateDensities <- function(
           return(function(x) mmb::getProbForDiscrete(temp, x))
         })()
       } else if (doEcdf) {
-        estFuncs[[feat]] <- stats::ecdf(condData[[feat]])
+        estFuncs[[feat]] <- (function() {
+          tryCatch({
+            temp <- condData[[feat]]
+            ecdf(temp)
+          }, error=function(cond) function(x) 0)
+        })()
       } else {
         estFuncs[[feat]] <- (function() {
           pdf <- mmb::estimatePdf(condData[[feat]])
