@@ -43,6 +43,7 @@ if (file.exists(commits_t0_file)) {
   commits_t0$X <- NULL
 } else {
   commits_t0 <- getDataset("rq5_treex", removeUnwantedColums = FALSE)
+  colnames(commits_t0) <- paste0(colnames(commits_t0), "_t_0")
   write.csv(commits_t0, file = commits_t0_file)
 }
 
@@ -64,6 +65,16 @@ if (file.exists(commits_t2_file)) {
 } else {
   commits_t2 <- get2ndOrderCommits()
   write.csv(commits_t2, file = commits_t2_file)
+}
+
+
+commits_t3_file <- normalizePath("../data/commits_t-3.csv", mustWork = FALSE)
+if (file.exists(commits_t3_file)) {
+  commits_t3 <- read.csv(commits_t3_file)
+  commits_t3$X <- NULL
+} else {
+  commits_t3 <- get3rdOrderCommits()
+  write.csv(commits_t3, file = commits_t3_file)
 }
 ```
 
