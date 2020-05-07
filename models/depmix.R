@@ -250,7 +250,13 @@ getTransprobs_2ndOrder <- function(states, data, stateColumn, returnTransprobsOn
 #' \code{estimateDepmixDensities()}.
 #' @return named vector with computed and summed up densities
 #' for each state.
-computeDensitiesSum <- function(O_t, states, densities) {
+computeDensitiesSum <- function(O_t, states, densities, ignoreGeneration = FALSE) {
+  if (ignoreGeneration) {
+    # Remove _t_n-from end of all column names. This is necessary
+    # if the density-functions do not have that in their name either.
+    colnames(O_t) <- gsub("_t_\\d+$", "", colnames(O_t))
+  }
+  
   # We have to compute the likelihood for all possible states
   # in order to find the maximum later.
   allJs <- c()
