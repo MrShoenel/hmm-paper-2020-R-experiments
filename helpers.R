@@ -136,6 +136,36 @@ get2ndOrderCommits <- function() {
   return(ds)
 }
 
+get3rdOrderCommits <- function() {
+  conn <- getExperimentConn()
+  result <- dbSendQuery(conn, "SELECT t0.*, t1.*, t2.*, t3.* FROM `rq5_treex` as t0 inner join `rq5_treex` as t1 on t0.ParentCommitSHA1s = t1.commitId inner join `rq5_treex` as t2 on t1.ParentCommitSHA1s = t2.commitId inner join `rq5_treex` as t3 on t2.ParentCommitSHA1s = t3.commitId;")
+  ds <- dbFetch(result)
+  
+  # Now we get order+1 times the columns, we split the colnames
+  # by order+1 and then rename using the schema from 1st-order.
+  cn <- colnames(ds)
+  l <- length(cn) / 4
+  names1st <- gsub("\\.\\.\\d+$", "_t_1", cn[(l+1):(l*2)])
+  names2nd <- gsub("\\.\\.\\d+$", "_t_2", cn[(l*2+1):(l*3)])
+  names3rd <- gsub("\\.\\.\\d+$", "_t_3", cn[(l*3+1):(l*4)])
+  colnames(ds) <- c(cn[1:l], names1st, names2nd, names3rd)
+  
+  # Also, rename the other columns to have
+  # the suffix "_t_0":
+  temp <- colnames(ds)
+  m <- !grepl("_t_\\d", temp)
+  for (i in 1:length(temp)) {
+    if (m[i]) {
+      temp[i] <- paste(temp[i], "_t_0", sep = "")
+    }
+  }
+  colnames(ds) <- temp
+  
+  dbClearResult(result)
+  dbDisconnect(conn)
+  return(ds)
+}
+
 getDataset <- function(dsName, removeUnwantedColums = TRUE) {
   conn <- getExperimentConn()
   result <- dbSendQuery(conn, paste("SELECT * FROM ", dsName))
