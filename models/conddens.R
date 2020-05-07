@@ -284,5 +284,81 @@ condDens_A_2ndOrder <- function(
 
 
 
-
-
+#' 1st-order conditional density model (model B). The underlying
+#' model is $$\frac_{\sum_{i=1}^{N} c_i^1(O_t) + b_j(O_t) }{N *  b_j(O_t)}$$
+condDens_B_1stOrder <- function(
+  states, data, observations, stateColumn,
+  doEcdf = FALSE, returnLogLikelihood = FALSE)
+{
+  # Here, we use the c_i functions, which fix the data at t-1=j,
+  # and then segment over the t_0 variables.
+  # This model is special, because it does not need to use an
+  # extra \phi_1(j) function.
+  
+  w <- mmb::getWarnings()
+  # Because otherwise, mmb will likely warn a lot about scarce data.
+  mmb::setWarnings(FALSE)
+  
+  df <- data[, ]
+  df[stateColumn] <- as.character(df[[stateColumn]])
+  
+  # We need to fix this column in each iteration:
+  fixColName <- gsub("_t_0$", "_t_1", stateColumn)
+  densities_c_1 <- list()
+  for (state in states) {
+    condData <- mmb::conditionalDataMin(
+      df = df, selectedFeatureNames = c(fixColName),
+      features = mmb::createFeatureForBayes(name = fixColName, value = state))
+    
+    cn <- colnames(condData)
+    featNames <- cn[grepl("_t_0$", cn)]
+    
+    densities_c_1 <- append(densities_c_1, estimateJointDensities(
+      data = condData[, featNames],
+      densFunSuffix = state,
+      ignoreGeneration = TRUE,
+      featuresPdfPmf = if (doEcdf) c() else featNames,
+      featuresCdf = if (doEcdf) featNames else c()
+    ))
+  }
+  
+  
+  # The densities for b_j we can get from the depmix-estimator.
+  # However, we want only the t_0 features:
+  featNames <- colnames(df)[grepl("_t_0$", colnames(df))]
+  densities_b <- estimateDepmixDensities(
+    states = states, stateColumn = stateColumn, data = df,
+    featuresPdfPmf = if (doEcdf) c() else featNames,
+    featuresCdf = if (doEcdf) featNames else c())
+  
+  
+  pred <- c()
+  for (j in 1:nrow(observations)) {
+    O_t <- observations[j, ]
+    b_j_O_t <- computeDensitiesSum(
+      O_t = O_t, states = states, densities = densities_b)
+    
+    predTemp <- c()
+    
+    for (state_j in states) {
+      c_i_O_t <- computeDensitiesSum(
+        O_t = O_t, states = states,
+        densities = densities_c_1, ignoreGeneration = TRUE)
+      
+      nominator <- 0
+      denominator <- 0
+      
+      for (state_i in states) {
+        nominator <- nominator + c_i_O_t[[state_i]] + b_j_O_t[[state_j]]
+        denominator <- denominator + b_j_O_t[[state_j]]
+      }
+      
+      predTemp[state_j] <- nominator / denominator
+    }
+    
+    pred <- c(pred, names(which.max(predTemp)))
+  }
+  
+  mmb::setWarnings(w)
+  return(pred)
+}
