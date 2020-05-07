@@ -30,6 +30,45 @@ if (interactive()) {
 }
 
 
+prepareDataForDepmix <- function(
+  data, orderedFactor2Numeric = TRUE, sparseInteger2Nominal = TRUE
+) {
+  if (!is.data.frame(data)) {
+    stop("data is not a data.frame")
+  }
+  
+  l <- nrow(data)
+  cn <- colnames(data)
+  for (c in cn) {
+    d <- data[[c]]
+    if (is.numeric(d)) {
+      # Check if is integers:
+      ni <- sum(d %% 1)
+      if (ni == 0) { # all are integers
+        if (sparseInteger2Nominal && length(unique(d)) <= base::ceiling(log2(l))) {
+          d <- as.character(d)
+          data[[c]] <- d
+        }
+      }
+    } else if (is.logical(d)) {
+      data[[c]] <- as.character(d)
+    } else if (is.character(d)) {
+      next
+    } else if (is.factor(d)) {
+      if (orderedFactor2Numeric && is.ordered(d)) {
+        data[[c]] <- as.numeric(d)
+      } else {
+        data[[c]] <- as.character(d)
+      }
+    } else {
+      data[[c]] <- as.character(d)
+    }
+  }
+  
+  return(data)
+}
+
+
 getExperimentConn <- function() {
   cnfFile <- normalizePath("../my.cnf")
   if (!file.exists(cnfFile)) {
