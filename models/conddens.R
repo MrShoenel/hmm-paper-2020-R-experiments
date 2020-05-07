@@ -18,6 +18,7 @@ estimateJointDensities <- function(
   if (ignoreGeneration) {
     cn <- gsub("_t_\\d+$", "", cn)
     fn <- gsub("_t_\\d+$", "", fn)
+    colnames(data) <- cn
   }
   
   for (feat in fn) {
@@ -54,15 +55,24 @@ estimateJointDensities <- function(
 
 
 
+condDens_phi1j_default <- function(O_1, initProbs, states, stateColumn, densities) {
+  b_j_O_1 <- computeDensitiesSum(
+    O_t = O_1, states = states, densities = densities)
+  
+  predTemp <- c()
+  for (state in states) {
+    predTemp[state] <- initProbs[state] * b_j_O_1[state]
+  }
+  O_1[[stateColumn]] <- names(which.max(predTemp))
+  return(O_1[[stateColumn]])
+}
 
+
+#' 1st-order conditional density model (model A).
 condDens_A_1stOrder <- function(
   states, data, observations, stateColumn,
   doEcdf = FALSE, returnLogLikelihood = FALSE)
 {
-  if (nrow(observations) < 2) {
-    stop("Need at least 2 observations to predict.")
-  }
-  
   w <- mmb::getWarnings()
   # Because otherwise, mmb will likely warn a lot about scarce data.
   mmb::setWarnings(FALSE)
@@ -115,61 +125,164 @@ condDens_A_1stOrder <- function(
   O_1 <- observations[1, ]
   initProbs <- getInitialStateProbs(
     data = df, stateColumn = stateColumn)
-  b_j_O_1 <- computeDensitiesSum(
-    O_t = O_1, states = states, densities = densities_b)
   
-  predTemp <- c()
-  for (state in states) {
-    predTemp[state] <- initProbs[state] * b_j_O_1[state]
-  }
-  O_1[[stateColumn]] <- names(which.max(predTemp))
-  pred <- c(O_1[[stateColumn]])
+  predTemp <- condDens_phi1j_default(
+    O_1 = O_1, initProbs = initProbs, states = states,
+    stateColumn = stateColumn, densities = densities_b)
+  O_1[[stateColumn]] <- predTemp
+  pred <- c(predTemp)
   
-  # Now assign the label of the greatest likelihood to each
-  # observation:
-  O_t_1 <- O_1
-  for (j in 2:nrow(observations)) { # we start at 2, as O_1 is done already
-    
-    # Now we have a bit of trouble. d_j and b_j were using the same
-    # segmented dataset, but b_j was estimated over all t_0 variables,
-    # and d_j over t_1 variables, meaning it stores the conditional
-    # densities of such observations, that had t_0=j as parent. Now
-    # when we feed the preceding observation to d_j, it would look at
-    # those t_1 variables. However, this is wrong because the actual
-    # data resides in O_t_1's t_0 variables! We need to delete those
-    # t_1 variables and rename t_0 to t_1, as computeDensitiesSum
-    # expects t_1-named variables.
-    #O_temp <- O_t_1[1, !grepl("t_1$", colnames(O_t_1))]
-    #colnames(O_temp) <- gsub("t_0$", "t_1", colnames(O_temp))
-    #O_t_1 <- O_temp
-    
-    # Attention: We use O_t_1 for d_j!
-    d_j <- computeDensitiesSum(
-      O_t = O_t_1, states = states,
-      densities = densities_d, ignoreGeneration = TRUE) # IMPORTANT!
-    
-    O_t <- observations[j, ]
-    b_j <- computeDensitiesSum(
-      O_t = O_t, states = states, densities = densities_b)
-    
-    predTemp <- c()
-    for (state in states) {
-      predTemp[state] <- d_j[state] * b_j[state]
+  if (nrow(observations) > 1) {
+    # Now assign the label of the greatest likelihood to each
+    # observation:
+    O_t_1 <- O_1
+    for (j in 2:nrow(observations)) { # we start at 2, as O_1 is done already
+      # Attention: We use O_t_1 for d_j!
+      d_j <- computeDensitiesSum(
+        O_t = O_t_1, states = states,
+        densities = densities_d, ignoreGeneration = TRUE) # IMPORTANT!
+      
+      O_t <- observations[j, ]
+      b_j <- computeDensitiesSum(
+        O_t = O_t, states = states, densities = densities_b)
+      
+      predTemp <- c()
+      for (state in states) {
+        predTemp[state] <- d_j[state] * b_j[state]
+      }
+      
+      O_t[stateColumn] <- names(which.max(predTemp))
+      pred <- c(pred, O_t[[stateColumn]])
+      
+      # Also, move O_t_1:
+      O_t_1 <- O_t
     }
-    
-    O_t[stateColumn] <- names(which.max(predTemp))
-    pred <- c(pred, O_t[[stateColumn]])
-    
-    # Also, move O_t_1:
-    O_t_1 <- O_t
   }
   
   mmb::setWarnings(w)
   return(pred)
 }
 
+
+#' 2nd-order conditional density model (model A). The underlying
+#' model is $$\phi_t^2(j) = d_j^2(O_{t-2}) * d_j^1(O_{t-1}) * b_j(O_t) $$.
 condDens_A_2ndOrder <- function(
   states, data, observations, stateColumn,
   doEcdf = FALSE, returnLogLikelihood = FALSE)
 {
+  # BEWARE: In this function, we use the NEW notation already!
+  # d_j, v_j become d_j^1(O_{t-1}) and d_j^2(O_{t-2}).
+  
+  w <- mmb::getWarnings()
+  # Because otherwise, mmb will likely warn a lot about scarce data.
+  mmb::setWarnings(FALSE)
+  
+  df <- data[, ]
+  df[stateColumn] <- as.character(df[[stateColumn]])
+  
+  
+  # initialize the three lists of densities, one for d_j, one for b_j:
+  # d_j is for observations that had j as successor, and it builds
+  # densities over the variables ending in _t_1.
+  # b_j is like in the depmix-models; i.e., it builds conditional
+  # densities over observations that had state j.
+  # Also, in this model, d_j, b_j (and v_j in 2nd-order) all use the
+  # same segmented dataset; the difference is over which generations'
+  # variables they estimate their densities.
+  
+  densities_d_2 <- list()
+  densities_d_1 <- list()
+  for (state in states) {
+    condData <- mmb::conditionalDataMin(
+      df = df, selectedFeatureNames = c(stateColumn),
+      features = mmb::createFeatureForBayes(name = stateColumn, value = state))
+    
+    cn <- colnames(condData)
+    featNames_2 <- cn[grepl("_t_2$", cn)]
+    featNames_1 <- cn[grepl("_t_1$", cn)]
+    
+    densities_d_2 <- append(densities_d_2, estimateJointDensities(
+      data = condData[, featNames_2],
+      densFunSuffix = state,
+      ignoreGeneration = TRUE,
+      featuresPdfPmf = if (doEcdf) c() else featNames_2,
+      featuresCdf = if (doEcdf) featNames_2 else c()
+    ))
+    
+    densities_d_1 <- append(densities_d_1, estimateJointDensities(
+      data = condData[, featNames_1],
+      densFunSuffix = state,
+      ignoreGeneration = TRUE,
+      featuresPdfPmf = if (doEcdf) c() else featNames_2,
+      featuresCdf = if (doEcdf) featNames_2 else c()
+    ))
+  }
+  
+  # The densities for b_j we can get from the depmix-estimator.
+  # However, we want only the t_0 features:
+  featNames <- colnames(df)[grepl("_t_0$", colnames(df))]
+  densities_b <- estimateDepmixDensities(
+    states = states, stateColumn = stateColumn, data = df,
+    featuresPdfPmf = if (doEcdf) c() else featNames,
+    featuresCdf = if (doEcdf) featNames else c())
+  
+  
+  # Estimate O_1 using \phi_1(j) and \pi_j:
+  O_1 <- observations[1, ]
+  initProbs <- getInitialStateProbs(
+    data = df, stateColumn = stateColumn)
+  
+  predTemp <- condDens_phi1j_default(
+    O_1 = O_1, initProbs = initProbs, states = states,
+    stateColumn = stateColumn, densities = densities_b)
+  O_1[[stateColumn]] <- predTemp
+  pred <- c(predTemp)
+  
+  if (nrow(observations) > 1) {
+    O_t_2 <- 0 # will only be available after the next round
+    O_t_1 <- O_1
+    
+    for (j in 2:nrow(observations)) {
+      use_d_2 <- j > 2
+      d_2 <- if (!use_d_2) NULL else computeDensitiesSum(
+        O_t = O_t_2, states = states,
+        densities = densities_d_2, ignoreGeneration = TRUE)
+      
+      d_1 <- computeDensitiesSum(
+        O_t = O_t_1, states = states,
+        densities = densities_d_1, ignoreGeneration = TRUE)
+      
+      O_t <- observations[j, ]
+      b_j <- computeDensitiesSum(
+        O_t = O_t, states = states, densities = densities_b)
+      
+      predTemp <- c()
+      for (state in states) {
+        if (use_d_2) {
+          predTemp[state] <- d_2[state] * d_1[state] * b_j[state]
+        } else {
+          predTemp[state] <- d_1[state] * b_j[state]
+        }
+      }
+      
+      O_t[[stateColumn]] <- names(which.max(predTemp))
+      pred <- c(pred, O_t[[stateColumn]])
+      
+      # Also move O_t_2 and O_t_1:
+      O_t_2 <- O_t_1
+      O_t_1 <- O_t
+    }
+  }
+  
+  
+  mmb::setWarnings(w)
+  return(pred)
 }
+
+
+
+
+
+
+
+
