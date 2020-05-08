@@ -244,3 +244,101 @@ buildObservationChains <- function(data, idCol, parentIdCol, returnOnlyInitial =
   return(chains)
 }
 
+grepAnyOrAll <- function(patterns, subjects, allMustMatch = FALSE) {
+  return(sapply(subjects, function(subject) {
+    res <- sapply(patterns, function(pattern) {
+      return(grepl(pattern = pattern, x = subject))
+    })
+    
+    if (allMustMatch) {
+      return(all(res))
+    }
+    return(sum(res) > 0) # return if at least one matches
+  }))
+}
+
+
+#' Returns a list of seeds used in parallel training with caret. For
+#' repeatability, we need deterministic seeds. The amount depends on
+#' the amounts of hyperparamenters, and number of folds/repeats.
+#' @param nh integer, the number of hyperparameters
+#' @param amount integer, the number of seeds, usually this is number
+#' of folds * number of repeats.
+#' @param seed integer used in \code{set.seed()}. Given an identical
+#' seed, this function produces the same seeds (idempotent).
+#' @return list with seeds that can be used in caret's trainControl
+get_seeds <- function(nh, amount, seed = 42) {
+  set.seed(seed)
+  
+  seeds <- vector(mode = "list", length = amount + 1)
+  for(i in 1:amount) seeds[[i]] <- sample.int(.Machine$integer.max, nh)
+  # For the last model:
+  seeds[[amount + 1]] <- sample.int(.Machine$integer.max, 1)
+  return(seeds)
+}
+
+
+doRfe <- function(data, y, yColName = "label_t", ignoreCols, number = 10, repeats = 10, maxSize = 50) {
+  set.seed(1337)
+  
+  cn <- colnames(data)
+  data <- data[, !grepAnyOrAll(c(ignoreCols, yColName), cn)]
+  
+  # We are training models now using RandomForests:
+  control <- caret::rfeControl(
+    functions = caret::rfFuncs, method = "cv", number = number, repeats = number)
+  
+  resultsRfe <- caret::rfe(
+    x = data, y = y,
+    # attempt to try sets of attributes between 1 and all attributes of size
+    sizes = 1:min(maxSize, length(colnames(data))), rfeControl = control)
+  
+  return(resultsRfe)
+}
+
+evaluateStatelessModel <- function(
+  ds, modelName, yColName, trP = 0.8, rcvNumber = 5, rcvRepeats = 3
+) {
+  isMMB <- modelName == "bayesCaret"
+  
+  y <- ds[, yColName]
+  x <- ds[, !(colnames(ds) %in% yColName)]
+  
+  trMethod <- "repeatedcv"
+  tuneLength <- ifelse(trMethod == "none", 1, 3)
+  numHypers <- nrow(if (isMMB) mmb::bayesCaret$grid(x = x, y = y) else caret::getModelInfo(modelName)[[1]]$grid(len = tuneLength, x = x, y = y))
+  
+  set.seed(23)
+  trControl <- caret::trainControl(
+    method = trMethod, number = rcvNumber, repeats = rcvRepeats, p = trP,
+    seeds = get_seeds(numHypers, rcvNumber * rcvRepeats, seed = 23))
+  
+  set.seed(371)
+  modelObj <- if (isMMB) mmb::bayesCaret else modelName
+  model <- caret::train(x = x, y = y, method = modelObj, trControl = trControl)
+  
+  return(model)
+}
+
+
+doWithParallelCluster <- function(expr, errorValue = NULL) {
+  cl <- makePSOCKcluster(detectCores())
+  registerDoParallel(cl)
+  
+  result <- tryCatch(expr, error=function(cond) {
+    if (!is.null(errorValue)) {
+      return(errorValue)
+    }
+    return(cond)
+  }, finally = {
+    stopCluster(cl)
+    registerDoSEQ()
+    cl <- NULL
+    gc()
+  })
+  return(result)
+}
+
+
+
+
