@@ -168,8 +168,8 @@ for (t_2 in levels(commits_t1$label)) {
       
       # Sum how often we went from t_2, over t_1, to t_0
       transprobs_2ndOrder[i0, i1, i2] <- transprobs_2ndOrder[i0, i1, i2] +
-        sum(commits_t2$label_t2 == t_2 &
-            commits_t2$label_t1 == t_1 &
+        sum(commits_t2$label_t_2 == t_2 &
+            commits_t2$label_t_1 == t_1 &
             commits_t2$label == t_0)
     }
   }
