@@ -1,14 +1,20 @@
 ---
 title: "Dependent Mixture Models and Joint Conditional Density Models"
 output:
-  md_document:
-    df_print: paged
   html_document:
     df_print: kable
     number_sections: true
+    toc: true
+  md_document:
+    df_print: paged
+    toc: true
+    number_sections: true
   html_notebook: default
-  pdf_document: default
-  word_document: default
+  pdf_document:
+    toc: true
+    number_sections: true
+  word_document:
+    toc: true
 ---
 
 
@@ -18,7 +24,11 @@ output:
 source("../helpers.R")
 install.packagesCond("knitr")
 knitr::opts_chunk$set(rows.print=25, cols.print=15)
+```
+
+```{r}
 source("../models/depmix.R")
+source("../models/conddens.R")
 ```
 
 
@@ -125,14 +135,14 @@ As a convention, the dimensions in these matrices and tensors are ordered from m
 
 ```{r}
 transprobs_1stOrder <- matrix(data = 0, nrow = 3, ncol = 3)
-colnames(transprobs_1stOrder) <- levels(commits_t1$label)
-rownames(transprobs_1stOrder) <- levels(commits_t1$label)
+colnames(transprobs_1stOrder) <- levels(commits_t1$label_t_0)
+rownames(transprobs_1stOrder) <- levels(commits_t1$label_t_0)
 
-for (t_1 in levels(commits_t1$label)) { # column-wise
-  for (t_0 in levels(commits_t1$label)) {
+for (t_1 in levels(commits_t1$label_t_1)) { # column-wise
+  for (t_0 in levels(commits_t1$label_t_1)) {
     # Sum how often we went from t_1 to t_0
     transprobs_1stOrder[t_0, t_1] <- transprobs_1stOrder[t_0, t_1] +
-      sum(commits_t1$label_t1 == t_1 & commits_t1$label == t_0)
+      sum(commits_t1$label_t_1 == t_1 & commits_t1$label_t_0 == t_0)
   }
   
   # Normalize all options for ending up in t_0 coming from t_1:
@@ -155,22 +165,22 @@ library("tensorr")
 # Create a dense 3x3x3 tensor
 transprobs_2ndOrder <- dtensor(array(data = 0, dim = c(3,3,3)))
 dimnames(transprobs_2ndOrder) <-
-  list(levels(commits_t0$label), levels(commits_t0$label), levels(commits_t0$label))
+  list(levels(commits_t0$label_t_0), levels(commits_t0$label_t_0), levels(commits_t0$label_t_0))
 
 # Now let's fill the tensor using a numeric mapping a=1, c=2, p=3:
 m <- c("a" = 1, "c" = 2, "p" = 3)
-for (t_2 in levels(commits_t1$label)) {
+for (t_2 in levels(commits_t2$label_t_2)) {
   i2 <- m[t_2]
-  for (t_1 in levels(commits_t1$label)) {
+  for (t_1 in levels(commits_t2$label_t_1)) {
     i1 <- m[t_1]
-    for (t_0 in levels(commits_t1$label)) {
+    for (t_0 in levels(commits_t2$label_t_0)) {
       i0 <- m[t_0]
       
       # Sum how often we went from t_2, over t_1, to t_0
       transprobs_2ndOrder[i0, i1, i2] <- transprobs_2ndOrder[i0, i1, i2] +
         sum(commits_t2$label_t_2 == t_2 &
             commits_t2$label_t_1 == t_1 &
-            commits_t2$label == t_0)
+            commits_t2$label_t_0 == t_0)
     }
   }
   
@@ -185,11 +195,324 @@ print(transprobs_2ndOrder)
 
 As an example, to go from `p` to `c` and then `a`, we call `transprobs_2ndOrder[m["a"], m["c"], m["p"]]`, and the probability is `r transprobs_2ndOrder[m["a"], m["c"], m["p"]]`. We have to use the `m[label]`-notation, as indexing of dimensions does not work on other dimensions other than the last for some reason.
 
-\begin{align}
-\phi_t^{1}(j) &= \phi_2^{2}(j) \\
-\vdots \\
-&= \frac{ \sum_{i=i}^{N} \Big[  \phi_{t-1}(i) \; \boldsymbol A_{ij} \; \boldsymbol b_j(O_t)  \Big] }{ \sum_{i=1}^{N} \phi_1(i)  }.
-\end{align}
+
+
+# Model Evaluation
+We want to evaluate *depmix*- and *conddens*-models and check their classification accuracy. However, we can separate all tests to those that require consecutive commits (chains with proper relations) for inferencing, and those that do not.
+
+Models that can be evaluated as stateless classifiers:
+
+* condDens models B and C
+* models supported by `mmb`
+* other models, such as Random forest
+
+Models that require consecutive observations for evaluation:
+
+* all depmix models
+* condDens model A
+
+
+For stateless models, we will do a classic cross-validation. For stateful models, we will train using all but one of the available chains of observations, and then inference on that remaining chain.
+
+We will only train and evaluate cross-project models (mainly because we don't have much data).
+
+
+## Most important Variables
+
+Furthermore, we are applying Recursive Feature Elimination (RFE) to find the most important features. We search among the `t_0`-features and will assume that any `t_n`-features of preceding commits have a comparable impact on classification performance.
+
+We will be doing an RFE using the `commit_t0` dataset. Across all datasets of commits we ignore these columns:
+
+```{r}
+# Mostly columns that could be used to identify a column. Note that
+# we keep "label", as it'll be removed for inferencing only.
+ignoreCols <- c(
+  "project", # because of scarce data, we train and evaluate only cross-project
+  "commitId",
+  "labelledBefore",
+  "reasonOrRule",
+  "RepoPathOrUrl",
+  "CommitterName",
+  "CommitterTime",
+  "CommitterEmail",
+  "CommitterNominalLabel",
+  "ParentCommitSHA1s",
+  "Message",
+  "branch",
+  "SHA1",
+  "AuthorName",
+  "AuthorTime",
+  "AuthorEmail",
+  "AuthorNominalLabel"
+)
+```
+
+Let's do the RFE:
+
+```{r}
+install.packagesCond("doParallel")
+library(doParallel)
+install.packagesCond("caret")
+library(caret)
+install.packagesCond("mlbench")
+library(mlbench)
+install.packagesCond("randomForest")
+library(randomForest)
+
+
+resultsRfeFile <- "../results/resultsRfe.rds"
+if (file.exists(resultsRfeFile)) {
+  resultsRfe <- readRDS(resultsRfeFile)
+  resultsRfe$X <- NULL
+} else {
+  resultsRfe <- doRfe(
+    data = commits_t0[, !grepAnyOrAll(ignoreCols, cn)],
+    y = commits_t0$label_t_0,
+    yColName = "label_t_0")
+  saveRDS(resultsRfe, resultsRfeFile)
+}
+
+plot(resultsRfe, type = c("g", "o"))
+print(caret::predictors(resultsRfe))
+```
+
+
+## Stateless Models
+For each dataset (`commits_t0`, `commits_t1`, `commits_t2`, `commits_t2`) we do a separate RFE, and then we do the following:
+
+* Re-order the dataset's columns by importance of the features.
+* For all 3rd-parts models we train using a repeated cross validation, using caret and a split of `0.8`.
+* For conditional-density models, we keep the same kind of variables in every generation and perform also a cross validation. We use the same split.
+  * Note we cannot use `t0`-datasets for these models, as there are no relations. However, we can compare our first- and second-order models' performance to the 3rd-party models that use `t0`-data.
+  * Note that only model __B__ supports a __3rd__-order.
+
+The 3rd-party models are these:
+
+```{r warning=FALSE}
+install.packagesCond("randomForest")
+install.packagesCond("e1071")
+install.packagesCond("ranger")
+install.packagesCond("dplyr")
+install.packagesCond("plyr")
+install.packagesCond("gbm")
+install.packagesCond("naivebayes")
+install.packagesCond("C50")
+
+# bayesCaret refers to mmb-models!
+caret_models <- c(#"bayesCaret", 
+  "null", "rf", "ranger", "gbm", "naive_bayes", "C5.0")
+#caret_models <- c("naive_bayes")
+```
+
+Let's do the computation!
+
+```{r}
+stateless_folds = 5
+stateless_repeats = 3
+results_stateless <- data.frame()
+
+
+resFile <- paste0("../results/stateless.csv")
+if (file.exists(resFile)) {
+  temp <- read.csv(resFile)
+  temp$X <- NULL
+  results_stateless <- rbind(results_stateless, temp)
+} else {
+  doWithParallelCluster({
+    for (idx in c(0:3)) {
+      yColName <- paste0("label_t_", idx)
+      data <- .GlobalEnv[[paste0("commits_t", idx)]]
+      # Compute it!
+      rfe <- doRfe(
+        data = data,
+        y = data[[yColName]],
+        yColName = "^label_t_",
+        ignoreCols = ignoreCols,
+        number = stateless_folds, repeats = stateless_repeats)
+      
+      useVars <- predictors(rfe)
+      plot(rfe, type = c("g", "o"))
+      
+      # Let's reorder the dataset:
+      data <- data[, c(yColName, useVars)]
+      
+      for (modelName in caret_models) {
+        trainedModel <- evaluateStatelessModel(
+          ds = data, modelName = modelName, yColName = yColName, trP = 0.8,
+          rcvNumber = stateless_folds, rcvRepeats = stateless_repeats)
+        result <- trainedModel$results[which.max(trainedModel$results$Accuracy), ]
+        
+        results_stateless <- rbind(results_stateless, data.frame(
+          vars = length(useVars),
+          t = idx,
+          model = modelName,
+          acc = result$Accuracy,
+          kappa = result$Kappa
+        ))
+      }
+    }
+  })
+  
+  write.csv(results_stateless, resFile)
+}
+
+print(results_stateless)
+```
+
+We will train the conditional density models separately, because we do not have a caret-compatible wrapper at this moment. Caret did an n-repeated, k-fold cross validation with all the data, using a split of `0.8`. We will do the same, n*k times, withholding 20% of the data at every turn. Then we predict it and average the results. Additionally, we will do this for the `doEcdf`-parameter.
+
+
+```{r}
+perms <- rbind(
+  expand.grid(
+    t = 1:3,
+    doEcdf = c(TRUE, FALSE),
+    rfeVars = c(TRUE, FALSE), # Use RFE-filtered variables or ALL
+    resample = 1:(stateless_folds * stateless_repeats),
+    model = c("B1", "B2", "B3")
+  ),
+  expand.grid(
+    t = 1:2,
+    doEcdf = c(TRUE, FALSE),
+    rfeVars = c(TRUE, FALSE),
+    resample = 1:(stateless_folds * stateless_repeats),
+    model = c("C1", "C2")
+  )
+)
+
+```
+
+```{r}
+permsRfe <- doWithParallelCluster({
+  foreach::foreach(
+    indexes = 1:3,
+    .packages = c("parallel", "doParallel")
+  ) %dopar% {
+    clNested <- makePSOCKcluster(max(2, detectCores() / 2))
+    registerDoParallel(clNested)
+    idx <- indexes
+    
+    yColName <- paste0("label_t_", idx)
+    data <- if (idx == 1) commits_t1 else if (idx == 2) commits_t2 else commits_t3
+
+    # Compute it!
+    temp <- doRfe(
+      data = data,
+      y = data[[yColName]],
+      yColName = "^label_t_",
+      ignoreCols = ignoreCols,
+      number = stateless_folds, repeats = stateless_repeats, maxSize = 100)
+    
+    stopCluster(clNested)
+    temp
+  }
+})
+```
+
+Let's show those RFE plots:
+```{r}
+for (n in 1:length(permsRfe)) {
+  plot(permsRfe[[n]], type=c("o","g"))
+}
+```
+
+
+
+```{r}
+results_stateless_conddens <- doWithParallelCluster({
+  foreach::foreach(
+    permRowIdx = rownames(perms),
+    .combine = rbind,
+    .packages = c("caret")
+  ) %dopar% {
+    permRow <- perms[permRowIdx, ]
+    permRfe <- permsRfe[[permRow$t]]
+    
+    t <- permRow$t
+    doEcdf <- permRow$doEcdf
+    rfeVars <- permRow$rfeVars
+    resamp <- permRow$resample
+    mType <- permRow$model
+    
+    model <- if (mType == "B1") condDens_B_1stOrder else if
+    (mType == "B2") condDens_B_2ndOrder else if
+    (mType == "B3") condDens_B_3rdOrder else if
+    (mType == "C1") condDens_C_1stOrder else if
+    (mType == "C2") condDens_C_2ndOrder else stop(paste("Model not known:", mType))
+    
+    data <- if (t == 1) commits_t1 else if (t == 2) commits_t2 else commits_t3
+    
+    # Use all variables for estimating densities and probabilities
+    # or just those left after RFE?
+    useVars <- if (rfeVars) predictors(permRfe) else colnames(data)
+  
+    # Take all variables used by rfe, in each generation.
+    # Note that these will not be ordered (which is not required)
+    # We need to include the labels for our models so they can
+    # build conditional densities.
+    temp <- c("label_t_", "MinutesSince", unique(gsub("_t_\\d+$", "", useVars)))
+    data <- data[, colnames(data)[grepAnyOrAll(
+      patterns = temp, subjects = colnames(data))]]
+    
+    # Split data to train and validation:
+    set.seed(t * resamp)
+    p <- caret::createDataPartition(data[["label_t_0"]], p = 0.8, list = FALSE)
+    train <- data[p, ]
+    valid <- data[-p, ]
+    
+    truth <- valid[, "label_t_0"]
+    pred <- model(
+      states = states,
+      data = train,
+      observations = valid,
+      stateColumn = "label_t_0",
+      doEcdf = doEcdf)
+    
+    cm <- caret::confusionMatrix(truth, factor(pred, levels = levels(truth)))
+    
+    cbind(permRow, data.frame(
+      vars = length(temp),
+      acc = cm$overall[[1]],
+      kappa = cm$overall[[2]]
+    ))
+  }
+})
+```
+
+```{r}
+
+
+for (idx in 1:1) {
+  yColName <- paste0("label_t_", idx)
+  data <- .GlobalEnv[[paste0("commits_t", idx)]]
+  # Compute it!
+  rfe <- doRfe(
+    data = data,
+    y = data[[yColName]],
+    yColName = "^label_t_",
+    ignoreCols = ignoreCols,
+    number = 2, repeats = 2)
+  
+  # Yes, we redid the RFE.. anyhow, let's select all variables
+  # that we want:
+  useVars <- predictors(rfe)
+  plot(rfe, type = c("g", "o"))
+  
+  # Take all variables used by rfe, in each generation.
+  # Note that these will not be ordered (which is not required)
+  # We need to include the labels for our models so they can
+  # build conditional densities.
+  temp <- c("label_t_", "MinutesSince", unique(gsub("_t_\\d+$", "", useVars)))
+  data <- data[, colnames(data)[grepAnyOrAll(
+    patterns = temp, subjects = colnames(data))]]
+  
+  condDens_B_1stOrder(states = states, data=data[1:199,], observations = data[200:236,], stateColumn = "label_t_0")
+}
+```
+
+
+
+
 
 
 
