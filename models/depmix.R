@@ -250,12 +250,20 @@ getTransprobs_2ndOrder <- function(states, data, stateColumn, returnTransprobsOn
 #' \code{estimateDepmixDensities()}.
 #' @return named vector with computed and summed up densities
 #' for each state.
-computeDensitiesSum <- function(O_t, states, densities, ignoreGeneration = FALSE) {
+computeDensitiesSum <- function(
+  O_t, states, densities, ignoreGeneration = FALSE
+) {
   if (ignoreGeneration) {
     # Remove _t_n-from end of all column names. This is necessary
     # if the density-functions do not have that in their name either.
     colnames(O_t) <- gsub("_t_\\d+$", "", colnames(O_t))
   }
+  
+  # We use this to determine which features are present in an
+  # observation, and only compute the factors for those. This
+  # is a common case, when, e.g., the labels of observations
+  # were removed.
+  obsFeats <- colnames(O_t)
   
   # We have to compute the likelihood for all possible states
   # in order to find the maximum later.
@@ -265,6 +273,11 @@ computeDensitiesSum <- function(O_t, states, densities, ignoreGeneration = FALSE
     for (densFunName in names(densities)) {
       sp <- strsplit(densFunName, split = "__@dens@__")[[1]]
       featName <- sp[1]
+      
+      if (!(featName %in% obsFeats)) {
+        next
+      }
+      
       if (sp[2] == state) {
         densFun <- densities[[densFunName]]
         densFactors[[featName]] <- densFun(O_t[[featName]])
