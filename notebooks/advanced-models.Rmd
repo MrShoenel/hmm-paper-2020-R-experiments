@@ -285,6 +285,9 @@ For each dataset (`commits_t0`, `commits_t1`, `commits_t2`, `commits_t2`) we do 
 * For conditional-density models, we keep the same kind of variables in every generation and perform also a cross validation. We use the same split.
   * Note we cannot use `t0`-datasets for these models, as there are no relations. However, we can compare our first- and second-order models' performance to the 3rd-party models that use `t0`-data.
   * Note that only model __B__ supports a __3rd__-order.
+  
+### Computation of 3rd-Party Models
+Since we have transformed our problem into one suitable for stateless classifiers, we will attempt using some of them so that we can compare their results and performance later.
 
 The 3rd-party models are these:
 
@@ -358,6 +361,9 @@ if (file.exists(resFile)) {
 
 print(results_stateless)
 ```
+
+
+### Computation of conditional Density Models
 
 We will train the conditional density models separately, because we do not have a caret-compatible wrapper at this moment. Caret did an n-repeated, k-fold cross validation with all the data, using a split of `0.8`. We will do the same, n*k times, withholding 20% of the data at every turn. Then we predict it and average the results. Additionally, we will do this for the `doEcdf`-parameter.
 
@@ -490,6 +496,161 @@ if (file.exists(resFileConddens)) {
 ```
 
 Todo: We need to add some plots here later!
+
+
+## Stateful Models
+In this section, we dedicate some effort into testing the Dependent Mixture Models (depmix), as well as some stateful models that facilitate conditional density.
+
+We have a number of consecutively labeled chains of commits. Since stateful models require going from one commit to the next, we will attempt inferencing each chain individually. The chains are differently long and belong to different projects, so we have some kind of cross validation.
+
+First we get all chains. Then, for each change, we will take the entire dataset and splice out the commits on the chain, thereby separating into training and validation data.
+
+```{r}
+treeXL <- getDataset("rq5_treex")
+treeXChains <- buildObservationChains(
+  data = treeXL, idCol = "commitId", parentIdCol = "ParentCommitSHA1s")
+```
+
+```{r}
+permsStateful <- rbind(
+  expand.grid(
+    t = 1,
+    doEcdf = c(TRUE, FALSE),
+    rfeVars = c(TRUE, FALSE), # Use RFE-filtered variables or ALL
+    resample = 1:(stateless_folds * stateless_repeats),
+    model = c("A1", "depmix1")
+  ),
+  expand.grid(
+    t = 2,
+    doEcdf = c(TRUE, FALSE),
+    rfeVars = c(TRUE, FALSE), # Use RFE-filtered variables or ALL
+    resample = 1:(stateless_folds * stateless_repeats),
+    model = c("A2", "depmix2")
+  )
+)
+```
+```{r}
+results_statefull <- data.frame()
+resFileStatefull <- paste0("../results/statefull.csv")
+if (file.exists(resFileStatefull)) {
+  temp <- read.csv(resFileStatefull)
+  temp$X <- NULL
+  results_statefull <- temp
+} else {
+  results_statefull <- doWithParallelCluster({
+    foreach::foreach(
+      permRowIdx = rownames(permsStateful),
+      .combine = rbind,
+      .packages = c("caret")
+    ) %dopar% {
+      permRow <- permsStateful[permRowIdx, ]
+      permRfe <- permsRfe[[permRow$t]]
+      
+      t <- permRow$t
+      doEcdf <- permRow$doEcdf
+      rfeVars <- permRow$rfeVars
+      resamp <- permRow$resample
+      mType <- permRow$model
+      
+      tryCatch({
+        
+        model <- if (mType == "A1") condDens_A_1stOrder else if
+        (mType == "A2") condDens_A_2ndOrder else if
+        (mType == "depmix1") depmixForward_1stOrder else if
+        (mType == "depmix2") depmixForward_2ndOrder else stop(paste("Model not known:", mType))
+        
+        data <- if (t == 1) commits_t1[, ] else commits_t2[, ]
+        lvl <- levels(data[["label_t_0"]])
+        data[["label_t_0"]] <- as.character(data[["label_t_0"]])
+        
+        # Use all variables for estimating densities and probabilities
+        # or just those left after RFE?
+        useVars <- if (rfeVars) predictors(permRfe) else colnames(data)
+        
+        
+        # We should take 0.8 of the data for training, and
+        # the rest for inferencing. However, we can only take
+        # data chain-wise. So we'll start and inferencing chain
+        # by chain and stop once we have at least taken 0.2%.
+        # We'll take random chains.
+        
+        set.seed(t * resamp)
+        chainNames <- sample(names(treeXChains))
+  
+        dataLen <- nrow(data)
+        pred <- c()
+        truth <- c()
+        
+        chainIdx <- 1
+        
+        while (TRUE) {
+          if (nrow(data) <= dataLen * 0.8) {
+            break
+          }
+          
+          nextChain <- chainNames[chainIdx]
+          
+          ## Now instead of train/validation, we have all commits
+          ## but those on the currently selected chain.
+          trainValid <- extractChain(
+            data = data, idColData = "commitId_t_0", idColChain = "commitId",
+            t = t, chains = treeXChains, chainId = nextChain)
+          train <- trainValid$data
+          valid <- trainValid$obs
+          
+          data <- trainValid$data
+          chainIdx <- chainIdx + 1
+          
+          # Take all variables used by rfe, in each generation.
+          # Note that these will not be ordered (which is not required)
+          # We need to include the labels for our models so they can
+          # build conditional densities.
+          temp <- c("label_t_", "MinutesSince", unique(gsub("_t_\\d+$", "", useVars)))
+          train <- train[, colnames(train)[grepAnyOrAll(
+            patterns = temp, subjects = colnames(train))]]
+          valid <- valid[, colnames(valid)[grepAnyOrAll(
+            patterns = temp, subjects = colnames(valid))]]
+          
+          truth <- c(truth, valid[, "label_t_0"])
+          # Remove the label from valid, to avoid the special cases
+          # for depmix models.
+          valid[["label_t_0"]] <- ""
+          
+          pred <- c(pred, model(
+            states = states,
+            data = train,
+            observations = valid,
+            stateColumn = "label_t_0",
+            doEcdf = doEcdf))
+        }
+        
+        truth <- factor(truth, levels = lvl)
+        pred <- factor(pred, levels = lvl)
+        cm <- caret::confusionMatrix(truth, pred)
+        
+        cbind(permRow, data.frame(
+          vars = length(temp),
+          acc = cm$overall[[1]],
+          kappa = cm$overall[[2]],
+          numChains = chainIdx - 1,
+          nrowData = nrow(data),
+          truth = paste(truth, collapse = ","),
+          pred = paste(pred, collapse = ",")
+        ))
+      }, error=function(cond) {
+        stop(paste(t, doEcdf, rfeVars, resamp, mType, cond))
+      })
+    }
+  })
+  
+  write.csv(results_statefull, resFileStatefull)
+}
+
+    
+```
+
+
+
 
 
 
