@@ -419,96 +419,78 @@ for (n in 1:length(permsRfe)) {
 
 
 ```{r}
-results_stateless_conddens <- doWithParallelCluster({
-  foreach::foreach(
-    permRowIdx = rownames(perms),
-    .combine = rbind,
-    .packages = c("caret")
-  ) %dopar% {
-    permRow <- perms[permRowIdx, ]
-    permRfe <- permsRfe[[permRow$t]]
+results_stateless_conddens <- data.frame()
+resFileConddens <- paste0("../results/stateless_cd.csv")
+if (file.exists(resFileConddens)) {
+  temp <- read.csv(resFileConddens)
+  temp$X <- NULL
+  results_stateless_conddens <- temp
+} else {
+  results_stateless_conddens <- doWithParallelCluster({
+    foreach::foreach(
+      permRowIdx = rownames(perms),
+      .combine = rbind,
+      .packages = c("caret")
+    ) %dopar% {
+      permRow <- perms[permRowIdx, ]
+      permRfe <- permsRfe[[permRow$t]]
+      
+      t <- permRow$t
+      doEcdf <- permRow$doEcdf
+      rfeVars <- permRow$rfeVars
+      resamp <- permRow$resample
+      mType <- permRow$model
+      
+      model <- if (mType == "B1") condDens_B_1stOrder else if
+      (mType == "B2") condDens_B_2ndOrder else if
+      (mType == "B3") condDens_B_3rdOrder else if
+      (mType == "C1") condDens_C_1stOrder else if
+      (mType == "C2") condDens_C_2ndOrder else stop(paste("Model not known:", mType))
+      
+      data <- if (t == 1) commits_t1 else if (t == 2) commits_t2 else commits_t3
+      
+      # Use all variables for estimating densities and probabilities
+      # or just those left after RFE?
+      useVars <- if (rfeVars) predictors(permRfe) else colnames(data)
     
-    t <- permRow$t
-    doEcdf <- permRow$doEcdf
-    rfeVars <- permRow$rfeVars
-    resamp <- permRow$resample
-    mType <- permRow$model
-    
-    model <- if (mType == "B1") condDens_B_1stOrder else if
-    (mType == "B2") condDens_B_2ndOrder else if
-    (mType == "B3") condDens_B_3rdOrder else if
-    (mType == "C1") condDens_C_1stOrder else if
-    (mType == "C2") condDens_C_2ndOrder else stop(paste("Model not known:", mType))
-    
-    data <- if (t == 1) commits_t1 else if (t == 2) commits_t2 else commits_t3
-    
-    # Use all variables for estimating densities and probabilities
-    # or just those left after RFE?
-    useVars <- if (rfeVars) predictors(permRfe) else colnames(data)
+      # Take all variables used by rfe, in each generation.
+      # Note that these will not be ordered (which is not required)
+      # We need to include the labels for our models so they can
+      # build conditional densities.
+      temp <- c("label_t_", "MinutesSince", unique(gsub("_t_\\d+$", "", useVars)))
+      data <- data[, colnames(data)[grepAnyOrAll(
+        patterns = temp, subjects = colnames(data))]]
+      
+      # Split data to train and validation:
+      set.seed(t * resamp)
+      p <- caret::createDataPartition(data[["label_t_0"]], p = 0.8, list = FALSE)
+      train <- data[p, ]
+      valid <- data[-p, ]
+      
+      truth <- valid[, "label_t_0"]
+      pred <- model(
+        states = states,
+        data = train,
+        observations = valid,
+        stateColumn = "label_t_0",
+        doEcdf = doEcdf)
+      
+      cm <- caret::confusionMatrix(truth, factor(pred, levels = levels(truth)))
+      
+      cbind(permRow, data.frame(
+        vars = length(temp),
+        acc = cm$overall[[1]],
+        kappa = cm$overall[[2]]
+      ))
+    }
+  })
   
-    # Take all variables used by rfe, in each generation.
-    # Note that these will not be ordered (which is not required)
-    # We need to include the labels for our models so they can
-    # build conditional densities.
-    temp <- c("label_t_", "MinutesSince", unique(gsub("_t_\\d+$", "", useVars)))
-    data <- data[, colnames(data)[grepAnyOrAll(
-      patterns = temp, subjects = colnames(data))]]
-    
-    # Split data to train and validation:
-    set.seed(t * resamp)
-    p <- caret::createDataPartition(data[["label_t_0"]], p = 0.8, list = FALSE)
-    train <- data[p, ]
-    valid <- data[-p, ]
-    
-    truth <- valid[, "label_t_0"]
-    pred <- model(
-      states = states,
-      data = train,
-      observations = valid,
-      stateColumn = "label_t_0",
-      doEcdf = doEcdf)
-    
-    cm <- caret::confusionMatrix(truth, factor(pred, levels = levels(truth)))
-    
-    cbind(permRow, data.frame(
-      vars = length(temp),
-      acc = cm$overall[[1]],
-      kappa = cm$overall[[2]]
-    ))
-  }
-})
-```
-
-```{r}
-
-
-for (idx in 1:1) {
-  yColName <- paste0("label_t_", idx)
-  data <- .GlobalEnv[[paste0("commits_t", idx)]]
-  # Compute it!
-  rfe <- doRfe(
-    data = data,
-    y = data[[yColName]],
-    yColName = "^label_t_",
-    ignoreCols = ignoreCols,
-    number = 2, repeats = 2)
-  
-  # Yes, we redid the RFE.. anyhow, let's select all variables
-  # that we want:
-  useVars <- predictors(rfe)
-  plot(rfe, type = c("g", "o"))
-  
-  # Take all variables used by rfe, in each generation.
-  # Note that these will not be ordered (which is not required)
-  # We need to include the labels for our models so they can
-  # build conditional densities.
-  temp <- c("label_t_", "MinutesSince", unique(gsub("_t_\\d+$", "", useVars)))
-  data <- data[, colnames(data)[grepAnyOrAll(
-    patterns = temp, subjects = colnames(data))]]
-  
-  condDens_B_1stOrder(states = states, data=data[1:199,], observations = data[200:236,], stateColumn = "label_t_0")
+  write.csv(results_stateless_conddens, resFileConddens)
 }
 ```
+
+Todo: We need to add some plots here later!
+
 
 
 
