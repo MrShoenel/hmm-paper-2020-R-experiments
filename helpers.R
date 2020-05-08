@@ -341,4 +341,35 @@ doWithParallelCluster <- function(expr, errorValue = NULL) {
 
 
 
+extractChain <- function(data, idColData, idColChain, t, chains, chainId) {
+  chainIds <- chains[[chainId]][[idColChain]]
+  if (t > 0) {
+    chainIds <- utils::tail(chainIds, -t)
+  }
+  
+  obs <- data.frame()
+  for (cId in chainIds) {
+    dRow <- data[data[[idColData]] == cId, ]
+    if (nrow(dRow) != 1) {
+      stop(paste("Cannot extract row with ID", cId, nrow(dRow), nrow(data)))
+    }
+    obs <- rbind(obs, dRow)
+  }
+  
+  return(list(
+    data = data[!(data[[idColData]] %in% chainIds), ],
+    obs = obs
+  ))
+}
+
+
+
+
+
+
+
+
+
+
+
 
