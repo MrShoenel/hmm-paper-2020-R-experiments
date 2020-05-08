@@ -187,3 +187,60 @@ getDataset <- function(dsName, removeUnwantedColums = TRUE) {
   dbDisconnect(conn)
   return(ds)
 }
+
+
+#' "data" needs to be data.frame with commits (i.e., not a list)
+#' @param data data.frame with observations. Each observation must have
+#' its own ID and the ID of a parent. For each set of observations in
+#' the data that can be concatenated by these two IDs, a data.frame of
+#' consecutive commits is produced then.
+#' @param returnOnlyInitial default FALSE, if TRUE, returns a data.frame
+#' with only those observations that do not have any parent (i.e.,
+#' observations that are initial in an ordered set of consecutive ob-
+#' servations).
+#' @return list where the key is an observation ID, and the value is a
+#' data.frame with consecutive observations. The first entry/row in this
+#' data.frame is the observation with that ID, and all following obser-
+#' vations are consecutive children. In other words, the first observation
+#' in that data.frame is the one that has no further parents, and the last
+#' observation is the "youngest", meaning there are no further children.
+buildObservationChains <- function(data, idCol, parentIdCol, returnOnlyInitial = F) {
+  observIds <- unique(data[[idCol]])
+  parentIds <- unique(data[[parentIdCol]])
+  chains <- list()
+  
+  initialIds <- observIds[!(data[[parentIdCol]] %in% observIds)]
+  initialObs <- data[data[[idCol]] %in% initialIds, ]
+  
+  if (returnOnlyInitial) {
+    return(initialObs)
+  }
+  
+  dataByParentId <- list()
+  for (i in 1:nrow(data)) {
+    obs <- data[i, ]
+    dataByParentId[[obs[[parentIdCol]]]] <- obs
+  }
+  
+  for (i in 1:nrow(initialObs)) {
+    parent <- initialObs[i, ]
+    chain <- data.frame(parent)
+    
+    parentId <- parent[[idCol]]
+    while (TRUE) {
+      child <- data[data[[parentIdCol]] == parentId, ]
+      
+      if (nrow(child) != 1) {
+        break
+      }
+      
+      chain <- rbind(chain, child)
+      parentId <- child[[idCol]]
+    }
+    
+    chains[[parent[[idCol]]]] <- chain
+  }
+  
+  return(chains)
+}
+

@@ -62,51 +62,9 @@ We will define a function, that build a list of chains of commits. The input is 
 
 
 ```{r}
-# 'data' needs to be data.frame with commits (i.e., not a list)
-buildCommitChains <- function(data, idCol, parentIdCol, returnOnlyInitial = F) {
-  commitIds <- unique(data[[idCol]])
-  parentIds <- unique(data[[parentIdCol]])
-  chains <- list()
-  
-  initialIds <- commitIds[!(data$ParentCommitSHA1s %in% commitIds)]
-  initialCommits <- data[data[[idCol]] %in% initialIds, ]
-  
-  if (returnOnlyInitial) {
-    return(initialCommits)
-  }
-  
-  dataByParentId <- list()
-  for (i in 1:nrow(data)) {
-    commit <- data[i, ]
-    dataByParentId[[commit$ParentCommitSHA1s]] <- commit
-  }
-  
-  for (i in 1:nrow(initialCommits)) {
-    parent <- initialCommits[i, ]
-    chain <- data.frame(parent)
-    
-    parentId <- parent[[idCol]]
-    while (TRUE) {
-      child <- data[data[[parentIdCol]] == parentId, ]
-      
-      if (nrow(child) != 1) {
-        break
-      }
-      
-      chain <- rbind(chain, child)
-      parentId <- child[[idCol]]
-    }
-    
-    chains[[parent[[idCol]]]] <- chain
-  }
-  
-  return(chains)
-}
-```
-
-```{r}
 treeXinitialCommits <- buildCommitChains(treeXL, "commitId", "ParentCommitSHA1s", returnOnlyInitial = TRUE)
-treeXChains <- buildCommitChains(treeXL, "commitId", "ParentCommitSHA1s", returnOnlyInitial = FALSE)
+treeXChains <- buildObservationChains(
+  data = treeXL, idCol = "commitId", parentIdCol = "ParentCommitSHA1s")
 ```
 
 
