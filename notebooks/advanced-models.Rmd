@@ -1,18 +1,18 @@
 ---
 title: "Dependent Mixture Models and Joint Conditional Density Models"
 output:
-  html_document:
-    df_print: kable
-    number_sections: true
+  pdf_document:
     toc: true
+    number_sections: true
   md_document:
     df_print: paged
     toc: true
     number_sections: true
   html_notebook: default
-  pdf_document:
-    toc: true
+  html_document:
+    df_print: kable
     number_sections: true
+    toc: true
   word_document:
     toc: true
 ---
@@ -115,9 +115,9 @@ The intial probabilities are, regardless of the order of the model, always build
 
 ```{r}
 initProbs <- c(
-  a = nrow(commits_t0[commits_t0$label == "a", ]),
-  c = nrow(commits_t0[commits_t0$label == "c", ]),
-  p = nrow(commits_t0[commits_t0$label == "p", ])
+  a = nrow(commits_t0[commits_t0$label_t_0 == "a", ]),
+  c = nrow(commits_t0[commits_t0$label_t_0 == "c", ]),
+  p = nrow(commits_t0[commits_t0$label_t_0 == "p", ])
 ) / nrow(commits_t0)
 
 print(initProbs)
@@ -302,9 +302,8 @@ install.packagesCond("naivebayes")
 install.packagesCond("C50")
 
 # bayesCaret refers to mmb-models!
-caret_models <- c(#"bayesCaret", 
+caret_models <- c(#"bayesCaret")#, 
   "null", "rf", "ranger", "gbm", "naive_bayes", "C5.0")
-#caret_models <- c("naive_bayes")
 ```
 
 Let's do the computation!
@@ -506,7 +505,7 @@ We have a number of consecutively labeled chains of commits. Since stateful mode
 First we get all chains. Then, for each change, we will take the entire dataset and splice out the commits on the chain, thereby separating into training and validation data.
 
 ```{r}
-treeXL <- getDataset("rq5_treex")
+treeXL <- getDataset("rq5_treex", removeUnwantedColums = FALSE)
 treeXChains <- buildObservationChains(
   data = treeXL, idCol = "commitId", parentIdCol = "ParentCommitSHA1s")
 ```
