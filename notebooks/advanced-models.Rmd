@@ -3,18 +3,22 @@ title: "Dependent Mixture Models and Joint Conditional Density Models"
 output:
   pdf_document:
     toc: true
+    toc_depth: 3
     number_sections: true
   md_document:
     df_print: paged
     toc: true
+    toc_depth: 3
     number_sections: true
   html_notebook: default
   html_document:
     df_print: kable
     number_sections: true
     toc: true
+    toc_depth: 3
   word_document:
     toc: true
+    toc_depth: 3
 ---
 
 
@@ -704,11 +708,26 @@ Let's do some inferencing. Note that, depending on the random seed, the train an
 # We'll combine predictions by adding them together, then returning
 # which output was max.
 
-predTemp <- predict(prevModels[["a"]], newdata = valid) +
-  predict(prevModels[["c"]], newdata = valid) +
-  predict(prevModels[["p"]], newdata = valid)
+predTempA <- predict(prevModels[["a"]], newdata = valid)
+predTempC <- predict(prevModels[["c"]], newdata = valid)
+predTempP <- predict(prevModels[["p"]], newdata = valid)
 
+predTemp <- predTempA + predTempC + predTempP
 predTruth <- unname(apply(predTemp, 1, which.max))
+
+caret::confusionMatrix(
+  factor(predTruth, levels = c(1,2,3)),
+  factor(validGroundTruth, levels = c(1,2,3)))
+```
+
+Let's do the same, but this time we take the maximum value across all three models instead of averaging:
+
+```{r}
+predTemp <- cbind(predTempA, predTempC, predTempP)
+predTruth <- unname(apply(predTemp, 1, function(row) {
+  m <- which.max(row) %% 3
+  return(if (m == 0) 3 else m)
+}))
 
 caret::confusionMatrix(
   factor(predTruth, levels = c(1,2,3)),
