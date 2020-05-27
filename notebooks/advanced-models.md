@@ -18,6 +18,8 @@
     -   [Stateful Models](#stateful-models)
         -   [Pseudo-stateful 3rd-party
             Models](#pseudo-stateful-3rd-party-models)
+    -   [Additional approaches for pseudo-stateful 3rd-party
+        models](#additional-approaches-for-pseudo-stateful-3rd-party-models)
 
     source("../models/depmix.R")
     source("../models/conddens.R")
@@ -906,3 +908,38 @@ three models instead of averaging:
     ## Detection Rate        0.02174  0.04348   0.5217
     ## Detection Prevalence  0.06522  0.13043   0.8043
     ## Balanced Accuracy     0.52853  0.53377   0.6365
+
+Additional approaches for pseudo-stateful 3rd-party models
+----------------------------------------------------------
+
+This did not work too well. However, we could try an additional approach
+close to **e**<sub>**i**, *j*</sub>-models (1st-order only), where we
+build number of labels to the power of the order + 1 models (here: 9
+models for 1st-order).
+
+The idea is the following:
+
+For each label and transition (e.g., going from “c” to “a”), we build a
+model over all *t*<sub>0</sub>-commits. The data would become scarce
+quickly, as it would mean segmenting over two variables. To counter
+this, we suggest killing two birds with one stone:
+
+-   Partition the commits into those that correspond to the given
+    transition, and those that do not.
+-   Keep a few of those that correspond as validation data and withhold
+    entirely.
+-   Create a new binary (yet numeric) label with 1 for the first set of
+    commits, and 0 for all others. That way, we get a lot of training
+    data for each model.
+-   Since we only regress to one value, we can use almost any of the
+    3rd-party models, such as Random forest. Also, having standard
+    3rd-party models, each model can be tuned separately, or we can even
+    combine them using, e.g., stacking or boosting.
+
+In our case, we get 3 models each leading to each type of commit (e.g.,
+there are 3 models that go from one of a/c/p to a). When inferencing, we
+have a number of options for achieve a vote, e.g.:
+
+-   Take the maximum or average/sum from each group of models.
+-   Same, but take max/avg from each individual model
+-   …
