@@ -649,27 +649,69 @@ if (file.exists(resFileStatefull)) {
 ```
 
 
+### Pseudo-stateful 3rd-party Models
 
+In this section, we create the data as it is used internally by the joint conditional density models that segment over one or more generations of parents and estimate densities over the current generation's variables.
 
+Here however, we do this only by segmenting over the previous generation. For each label, we train a separate model. Later, we combine the votes of these models by averaging.
 
+```{r}
+install.packagesCond("neuralnet")
+library(neuralnet)
 
+set.seed(847321)
+p <- caret::createDataPartition(commits_t1[["label_t_0"]], p = 0.8, list = FALSE)
+train <- commits_t1[p, ]
+valid <- commits_t1[-p, ]
 
+# We'll store the neural nets in this list.
+# We need one model per label.
+prevModels <- list()
+lvls <- levels(commits_t1$label_t_0)
+for (lvl in lvls) {
+  tempData <- train[train$label_t_1 == lvl, ]
+  tempData <- tempData[, !grepAnyOrAll(c(ignoreCols, "t_1$"), colnames(tempData))]
+  
+  # We need those for one-hot encoding:
+  tempData$isA <- sapply(tempData$label_t_0, function(l) if (l == "a") 1 else 0)
+  tempData$isC <- sapply(tempData$label_t_0, function(l) if (l == "c") 1 else 0)
+  tempData$isP <- sapply(tempData$label_t_0, function(l) if (l == "p") 1 else 0)
+  # Remove the label (we use the one-hot now):
+  tempData$label_t_0 <- NULL
+  
+  set.seed(1337)
+  tempNet <- neuralnet::neuralnet(
+    formula = isA + isC + isP ~.,
+    data = tempData, hidden = c(3))
+  
+  prevModels[[lvl]] <- tempNet
+}
 
+# Prepare the validation data, too:
+validGroundTruth <- sapply(valid$label_t_0, function(l) {
+  if (l == "a") return(1)
+  if (l == "c") return(2)
+  return(3)
+})
 
+valid <- valid[, !grepAnyOrAll(c(ignoreCols, "t_1$"), colnames(valid))]
+valid$label_t_0 <- NULL
+```
 
+Let's do some inferencing. Note that, depending on the random seed, the train and validation sets differ greatly, and the following inferencing typically results in ~55% accuracy, with the lowest about 45%, and the highest around 63% (Kappa 0.3). This is still a bit lower compared with where the other 3rd-party models max out.
 
+```{r}
+# We'll combine predictions by adding them together, then returning
+# which output was max.
 
+predTemp <- predict(prevModels[["a"]], newdata = valid) +
+  predict(prevModels[["c"]], newdata = valid) +
+  predict(prevModels[["p"]], newdata = valid)
 
+predTruth <- unname(apply(predTemp, 1, which.max))
 
-
-
-
-
-
-
-
-
-
-
-
+caret::confusionMatrix(
+  factor(predTruth, levels = c(1,2,3)),
+  factor(validGroundTruth, levels = c(1,2,3)))
+```
 
