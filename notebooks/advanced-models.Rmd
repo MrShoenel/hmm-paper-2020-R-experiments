@@ -1,12 +1,9 @@
 ---
 title: "Dependent Mixture Models and Joint Conditional Density Models"
 output:
-  html_document: 
-    df_print: kable
-    fig_caption: yes
-    keep_md: yes
-    number_sections: yes
-    toc: yes
+  md_document:
+    df_print: paged
+    toc: true
     toc_depth: 3
   pdf_document: 
     fig_caption: yes
@@ -14,9 +11,12 @@ output:
     number_sections: yes
     toc: yes
     toc_depth: 3
-  md_document:
-    df_print: paged
-    toc: true
+  html_document: 
+    df_print: kable
+    fig_caption: yes
+    keep_md: yes
+    number_sections: yes
+    toc: yes
     toc_depth: 3
   word_document: 
     fig_caption: yes
