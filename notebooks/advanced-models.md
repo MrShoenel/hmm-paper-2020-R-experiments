@@ -18,8 +18,8 @@
     -   [Stateful Models](#stateful-models)
         -   [Pseudo-stateful 3rd-party
             Models](#pseudo-stateful-3rd-party-models)
-    -   [Additional approaches for pseudo-stateful 3rd-party
-        models](#additional-approaches-for-pseudo-stateful-3rd-party-models)
+        -   [Additional approaches for pseudo-stateful 3rd-party
+            models](#additional-approaches-for-pseudo-stateful-3rd-party-models)
 
     source("../models/depmix.R")
     source("../models/conddens.R")
@@ -909,8 +909,7 @@ three models instead of averaging:
     ## Detection Prevalence  0.06522  0.13043   0.8043
     ## Balanced Accuracy     0.52853  0.53377   0.6365
 
-Additional approaches for pseudo-stateful 3rd-party models
-----------------------------------------------------------
+### Additional approaches for pseudo-stateful 3rd-party models
 
 This did not work too well. However, we could try an additional approach
 close to **e**<sub>**i**, *j*</sub>-models (1st-order only), where we

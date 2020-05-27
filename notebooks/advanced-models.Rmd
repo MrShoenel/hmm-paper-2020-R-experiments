@@ -743,7 +743,7 @@ caret::confusionMatrix(
 ```
 
 
-## Additional approaches for pseudo-stateful 3rd-party models
+### Additional approaches for pseudo-stateful 3rd-party models
 
 This did not work too well. However, we could try an additional approach close to $\boldsymbol e_{\boldsymbol i,j}$-models (1st-order only), where we build number of labels to the power of the order + 1 models (here: 9 models for 1st-order).
 
