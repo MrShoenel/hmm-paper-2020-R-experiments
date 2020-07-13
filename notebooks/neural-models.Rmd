@@ -1,0 +1,150 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+source("../models/neural.R")
+```
+
+# Testing
+
+We want to test our model `__m1__` using the weighted RSS loss (_wRSS_). The test is simple: try to learn XOR. We use a network with 4 hidden, relu-activated units. The output is sigmoid-activated.
+
+```{r}
+set.seed(0xbeef)
+
+lxl <- 3
+wh_xor <- glorot_weights(2,lxl)
+bh_xor <- glorot_weights(1,lxl)
+wo_xor <- glorot_weights(lxl,1)
+bo_xor <- glorot_weights(1,1)
+
+XY_xor <- matrix(data = c(0,0,1,1,0,1,0,1,0,1,1,0), nrow = 4)
+XY_xor
+```
+
+Let's train the network!
+
+```{r}
+xor_weights <- gradient_descent_m1(
+  X=XY_xor[,1:2], Y=matrix(data = XY_xor[,3], nrow = 4),
+  w_h_0 = wh_xor, b_h_0 = bh_xor, w_o_0 = wo_xor, b_o_0 = bo_xor,
+  epochs = 5e4, learning_rate = 5e-2, precision = 5e-6)
+```
+
+```{r}
+print(sapply(1:nrow(XY_xor), function(rn) {
+  loss_wRSS_m1(
+    X = matrix(data = XY_xor[rn, 1:2], nrow = 1),
+    Y = matrix(data = XY_xor[rn ,3], nrow = 1),
+    w_h = xor_weights$w_h, b_h = xor_weights$b_h,
+    w_o = xor_weights$w_o, b_o = xor_weights$b_o)
+}))
+
+print(XY_xor)
+
+print(sapply(1:nrow(XY_xor), function(rn) {
+  m1(x_i = XY_xor[rn, 1:2],
+    w_h = xor_weights$w_h, b_h = xor_weights$b_h,
+    w_o = xor_weights$w_o, b_o = xor_weights$b_o)
+}))
+```
+
+Number of elapsed epochs:
+```{r}
+length(xor_weights$hist_loss)
+```
+
+
+```{r}
+plot(x = 1:length(xor_weights$hist_loss), y = xor_weights$hist_loss)
+```
+
+
+.. and plot a perspective plot:
+
+```{r}
+m1_xor_wrap <- function(x1, x2, w_h, b_h, w_o, b_o) {
+  N <- length(x1)
+  z <- rep(0, N)
+  for (i in 1:N) {
+    z[i] <- m1(
+      x_i = c(x1[i], x2[i]),
+      w_h = w_h, b_h = b_h, w_o = w_o, b_o = b_o)
+  }
+  z
+}
+
+x <- y <- seq(0,1,by = 0.05)
+z <- outer(x, y, function(x1,x2) {
+  m1_xor_wrap(
+    x1, x2,
+    w_h = xor_weights$w_h, b_h = xor_weights$b_h,
+    w_o = xor_weights$w_o, b_o = xor_weights$b_o)
+})
+
+persp(x, y, z,
+      main="Perspective Plot of XOR",
+      zlab = "m1 output",
+      theta = 325, phi = 25,
+      col = "springgreen", shade = 0.33)
+```
+
+```{r}
+temp <- xor_weights
+temp$hist_loss <- NULL
+temp
+```
+
+
+# Commit Data
+
+Let's attempt to learn some 1st-order commits.
+
+```{r}
+temp <- data2Densities_1stOrder(states = states, data = commits_t1[,], stateColumn = "label_t_0", split = 0.8, normalizePdfs = TRUE)
+
+train <- temp$train[,]
+nzv <- caret::nzv(train, names = TRUE, saveMetrics = TRUE)
+train <- train[, !nzv$zeroVar]
+train <- train[, !grepAnyOrAll(ignoreCols, colnames(train))]
+train <- train[, !grepAnyOrAll("label", colnames(train))]
+
+valid <- temp$valid[, colnames(temp$valid) %in% colnames(train)]
+
+train_X <- as.matrix(train[, !grepAnyOrAll("^y_t", colnames(train))])
+train_Y <- as.matrix(train[, grepAnyOrAll("^y_t", colnames(train))])
+valid_X <- as.matrix(valid[, !grepAnyOrAll("^y_t", colnames(valid))])
+valid_Y <- as.matrix(valid[, grepAnyOrAll("^y_t", colnames(valid))])
+```
+
+Let's prepare some neural network for this:
+
+```{r}
+set.seed(0xbeef)
+
+lxl <- 20
+wh_c <- glorot_weights(ncol(train_X),lxl)
+bh_c <- glorot_weights(1,lxl)
+wo_c <- glorot_weights(lxl,2)
+bo_c <- glorot_weights(1,2)
+
+c_weights <- gradient_descent_m1(
+  X=as.matrix(train_X), Y=as.matrix(train_Y),
+  w_h_0 = wh_c, b_h_0 = bh_c, w_o_0 = wo_c, b_o_0 = bo_c,
+  epochs = 1e3, learning_rate = 1e-2, precision = 1e-4)
+```
+
+```{r}
+plot(x = 1:length(c_weights$hist_loss), y = c_weights$hist_loss)
+```
+
+
+
+
+
+
+
+
+
