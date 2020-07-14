@@ -1,9 +1,9 @@
 relu <- function(x) {
-  return(max(0, x))
+  return(max(0.1 * x, x))
 }
 
 relu_d1 <- function(x) {
-  if (x < 0) return(0)
+  if (x <= 0) return(0.1)
   return(1)
 }
 
@@ -31,7 +31,7 @@ glorot_weights <- function(numIn, numOut) {
 }
 
 
-m1 <- function(x_i, w_h, b_h, w_o, b_o) {
+m1 <- function(x_i, w_h, b_h, w_o, b_o, act.fn = relu, act.fn.derive = relu_d1) {
   num_inputs <- length(x_i)
   num_hidden <- length(w_h) / num_inputs
   w_per_hidden <- length(w_h) / num_hidden
