@@ -50,7 +50,7 @@ m1 <- function(x_i, w_h, b_h, w_o, b_o, act.fn = relu, act.fn.derive = relu_d1) 
   for (i in 1:num_hidden) {
     off <- (i-1) * w_per_hidden + 1
     w <- w_h[off:(off + w_per_hidden - 1)]
-    H[1, i] <- swish(w %*% x_i + b_h[i])
+    H[1, i] <- act.fn(w %*% x_i + b_h[i])
   }
   
   O <- matrix(nrow = 1, ncol = num_output)
@@ -64,7 +64,13 @@ m1 <- function(x_i, w_h, b_h, w_o, b_o, act.fn = relu, act.fn.derive = relu_d1) 
 }
 
 
-loss_wRSS_m1 <- function(X, Y, w_h, b_h, w_o, b_o) {
+loss_wRSS_m1 <- function(X, Y, w_h, b_h, w_o, b_o, act.fn = relu, act.fn.derive = relu_d1) {
+  single_sample <- is.null(dim(X))
+  if (single_sample) {
+    X <- matrix(data = X, nrow = 1)
+    Y <- matrix(data = Y, nrow = 1)
+  }
+  
   N <- nrow(X)
   lOl <- ncol(Y)
   e <- lOl:1
@@ -72,7 +78,7 @@ loss_wRSS_m1 <- function(X, Y, w_h, b_h, w_o, b_o) {
   l <- 0
   for (i in 1:N) {
     for (j in 1:lOl) {
-      temp <- m1(X[i, ], w_h = w_h, b_h = b_h, w_o = w_o, b_o = b_o)
+      temp <- m1(X[i, ], w_h = w_h, b_h = b_h, w_o = w_o, b_o = b_o, act.fn = act.fn, act.fn.derive = act.fn.derive)
       l <- l +
         (e[j] * Y[i, j]**2) -
         (2 * e[j] * Y[i, j] * temp[j]) +
@@ -84,7 +90,7 @@ loss_wRSS_m1 <- function(X, Y, w_h, b_h, w_o, b_o) {
 }
 
 
-compute_grad_wRSS_m1 <- function(X, Y, w_h, b_h, w_o, b_o) {
+compute_grad_wRSS_m1 <- function(X, Y, w_h, b_h, w_o, b_o, act.fn = relu, act.fn.derive = relu_d1) {
   num_inputs <- ncol(X)
   num_hidden <- length(w_h) / num_inputs
   w_per_hidden <- length(w_h) / num_hidden
@@ -127,12 +133,12 @@ compute_grad_wRSS_m1 <- function(X, Y, w_h, b_h, w_o, b_o) {
       for (n in 1:num_hidden) {
         off <- (n-1) * w_per_hidden + 1
         w <- w_h[off:(off + w_per_hidden - 1)]
-        H[1, n] <- swish(w %*% X[i, ] + b_h[n])
+        H[1, n] <- act.fn(w %*% X[i, ] + b_h[n])
       }
       
       w <- w_o[((j-1) * num_hidden + 1):(j * num_hidden)]
       grad_all <- sigmoid_d1(w %*% H[1, ] + b_o[j])
-      m1_all <- m1(X[i, ], w_h = w_h, b_h = b_h, w_o = w_o, b_o = b_o)
+      m1_all <- m1(X[i, ], w_h = w_h, b_h = b_h, w_o = w_o, b_o = b_o, act.fn = act.fn, act.fn.derive = act.fn.derive)
       
       
       # Now, for each of the four types of parameters, we'll
@@ -144,7 +150,7 @@ compute_grad_wRSS_m1 <- function(X, Y, w_h, b_h, w_o, b_o) {
       # 1)
       for (k in 1:l_w_o) {
         w <- w_h[((modp(k, num_hidden) - 1) * num_inputs + 1):(modp(k, num_hidden) * num_inputs)]
-        m1_prime <- grad_all * swish(w %*% X[i, ] + b_h[modp(k, num_hidden)])
+        m1_prime <- grad_all * act.fn(w %*% X[i, ] + b_h[modp(k, num_hidden)])
         
         grad_w_o[k] <- grad_w_o[k] +
           2 * e[j] * (m1_all[j] * m1_prime - Y[i, j] * m1_prime)
@@ -165,7 +171,7 @@ compute_grad_wRSS_m1 <- function(X, Y, w_h, b_h, w_o, b_o) {
         
         w <- w_h[((ceiling(k / num_inputs) - 1) * num_inputs + 1):(ceiling(k / num_inputs) * num_inputs)]
         b <- b_h[ceiling(k / num_inputs)]
-        m1_prime <- grad_all * swish_d1(w %*% X[i, ] + b) * single_x_i * single_w
+        m1_prime <- grad_all * act.fn.derive(w %*% X[i, ] + b) * single_x_i * single_w
         
         grad_w_h[k] <- grad_w_h[k] +
           2 * e[j] * (m1_all[j] * m1_prime - Y[i, j] * m1_prime)
@@ -177,7 +183,7 @@ compute_grad_wRSS_m1 <- function(X, Y, w_h, b_h, w_o, b_o) {
         
         w <- w_h[((k-1) * num_inputs + 1):(k * num_inputs)]
         b <- b_h[k]
-        m1_prime <- grad_all * swish_d1(w %*% X[i, ] + b) * single_w
+        m1_prime <- grad_all * act.fn.derive(w %*% X[i, ] + b) * single_w
         
         grad_b_h[k] <- grad_b_h[k] +
           2 * e[j] * (m1_all[j] * m1_prime - Y[i, j] * m1_prime)
@@ -195,17 +201,18 @@ compute_grad_wRSS_m1 <- function(X, Y, w_h, b_h, w_o, b_o) {
 
 
 
-gradient_descent_m1 <- function(X, Y, w_h_0, b_h_0, w_o_0, b_o_0, epochs = 1e2, learning_rate = 1e-3, precision = 1e-4, batch_size = -1) {
-  hist_loss <- c(loss_wRSS_m1(X, Y, w_h = w_h_0, b_h = b_h_0, w_o = w_o_0, b_o = b_o_0))
+gradient_descent_m1 <- function(X, Y, w_h_0, b_h_0, w_o_0, b_o_0, epochs = 1e2, learning_rate = 1e-3, precision = 1e-4, batch_size = -1, act.fn = relu, act.fn.derive = relu_d1, valid_X = NULL, valid_Y = NULL) {
+  hist_loss <- c(loss_wRSS_m1(X, Y, w_h = w_h_0, b_h = b_h_0, w_o = w_o_0, b_o = b_o_0, act.fn = act.fn, act.fn.derive = act.fn.derive))
   
   w_o <- w_o_0
   b_o <- b_o_0
   w_h <- w_h_0
   b_h <- b_h_0
   
+  use_X <- X
+  use_Y <- Y
+  
   for (i in 1:epochs) {
-    use_X <- X
-    use_Y <- Y
     if (batch_size > 0) {
       rns <- sample(1:nrow(X), size = batch_size)
       use_X <- matrix(data = X[rns, ], nrow = length(rns))
@@ -214,7 +221,7 @@ gradient_descent_m1 <- function(X, Y, w_h_0, b_h_0, w_o_0, b_o_0, epochs = 1e2, 
     
     grads <- compute_grad_wRSS_m1(
       X = use_X, Y = use_Y,
-      w_h = w_h, b_h = b_h, w_o = w_o, b_o = b_o)
+      w_h = w_h, b_h = b_h, w_o = w_o, b_o = b_o, act.fn = act.fn, act.fn.derive = act.fn.derive)
     
     step_w_o <- grads$grad_w_o * learning_rate
     step_b_o <- grads$grad_b_o * learning_rate
@@ -226,8 +233,15 @@ gradient_descent_m1 <- function(X, Y, w_h_0, b_h_0, w_o_0, b_o_0, epochs = 1e2, 
     w_h <- w_h - step_w_h
     b_h <- b_h - step_b_h
     
+    # Compute loss over entire training or the validation data.
+    loss_X <- if (is.null(valid_X)) X else valid_X
+    loss_Y <- if (is.null(valid_Y)) Y else valid_Y
+    
     hist_loss <- c(
-      hist_loss, loss_wRSS_m1(X, Y, w_h = w_h, b_h = b_h, w_o = w_o, b_o = b_o))
+      hist_loss, loss_wRSS_m1(
+        X = loss_X, Y = loss_Y,
+        w_h = w_h, b_h = b_h, w_o = w_o, b_o = b_o,
+        act.fn = act.fn, act.fn.derive = act.fn.derive))
     
     if (all(c(step_w_o, step_b_o, step_w_h, step_b_h) < precision)) {
       print("Stopping early, as the improvement is less than the threshold.")
@@ -244,6 +258,18 @@ gradient_descent_m1 <- function(X, Y, w_h_0, b_h_0, w_o_0, b_o_0, epochs = 1e2, 
   ))
 }
 
+
+m1_predict <- function(X, w_h, b_h, w_o, b_o, act.fn = relu, act.fn.derive = relu_d1) {
+  N <- nrow(X)
+  num_output <- length(b_o)
+  Y <- matrix(nrow = N, ncol = num_output)
+  
+  for (i in 1:N) {
+    Y[i, ] <- m1(x_i = X[i,], w_h = w_h, b_h = b_h, w_o = w_o, b_o = b_o, act.fn = act.fn, act.fn.derive = act.fn.derive)
+  }
+  
+  return(Y)
+}
 
 
 

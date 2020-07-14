@@ -14,7 +14,7 @@ We want to test our model `__m1__` using the weighted RSS loss (_wRSS_). The tes
 ```{r}
 set.seed(0xbeef)
 
-lxl <- 3
+lxl <- 12
 wh_xor <- glorot_weights(2,lxl)
 bh_xor <- glorot_weights(1,lxl)
 wo_xor <- glorot_weights(lxl,1)
@@ -30,7 +30,7 @@ Let's train the network!
 xor_weights <- gradient_descent_m1(
   X=XY_xor[,1:2], Y=matrix(data = XY_xor[,3], nrow = 4),
   w_h_0 = wh_xor, b_h_0 = bh_xor, w_o_0 = wo_xor, b_o_0 = bo_xor,
-  epochs = 5e4, learning_rate = 5e-2, precision = 5e-6)
+  epochs = 1e4, learning_rate = 1e-1, precision = 1e-6)
 ```
 
 ```{r}
@@ -103,20 +103,28 @@ temp
 Let's attempt to learn some 1st-order commits.
 
 ```{r}
-temp <- data2Densities_1stOrder(states = states, data = commits_t1[,], stateColumn = "label_t_0", split = 0.8, normalizePdfs = TRUE)
+temp <- data2Densities_1stOrder(states = states, data = commits_t1[,], stateColumn = "label_t_0", split = 0.85, normalizePdfs = TRUE)
 
 train <- temp$train[,]
-nzv <- caret::nzv(train, names = TRUE, saveMetrics = TRUE)
-train <- train[, !nzv$zeroVar]
-train <- train[, !grepAnyOrAll(ignoreCols, colnames(train))]
-train <- train[, !grepAnyOrAll("label", colnames(train))]
-
-valid <- temp$valid[, colnames(temp$valid) %in% colnames(train)]
-
-train_X <- as.matrix(train[, !grepAnyOrAll("^y_t", colnames(train))])
 train_Y <- as.matrix(train[, grepAnyOrAll("^y_t", colnames(train))])
-valid_X <- as.matrix(valid[, !grepAnyOrAll("^y_t", colnames(valid))])
-valid_Y <- as.matrix(valid[, grepAnyOrAll("^y_t", colnames(valid))])
+train_est <- train[, colnames(train) %in% c("est_t0", "est_t1")]
+nzv <- caret::nzv(train, names = TRUE, saveMetrics = TRUE)
+train <- train[, !(nzv$zeroVar | nzv$nzv)]
+train <- train[, !grepAnyOrAll(ignoreCols, colnames(train))]
+train <- train[, !grepAnyOrAll(c("label", "est_t", "y_t"), colnames(train))]
+train_X <- as.matrix(cbind(train[, grepAnyOrAll("^d_", colnames(train))], train_est))
+
+#### TEST
+#tempNames <- colnames(train)[grepAnyOrAll("^d_", colnames(train))]
+#train <- train[, colnames(train) %in% c(tempNames, "est_t0", "est_t1", "y_t0", "yt_1")]
+
+#valid <- temp$valid[, colnames(temp$valid) %in% colnames(train)]
+
+#
+#train_Y <- as.matrix(train[, grepAnyOrAll("^y_t", colnames(train))])
+valid <- temp$valid[, ]
+valid_X <- as.matrix(valid[, colnames(train_X)[!grepAnyOrAll("^y_t", colnames(train_X))]])
+valid_Y <- as.matrix(valid[, colnames(train_Y)])
 ```
 
 Let's prepare some neural network for this:
@@ -124,22 +132,29 @@ Let's prepare some neural network for this:
 ```{r}
 set.seed(0xbeef)
 
-lxl <- 20
-wh_c <- glorot_weights(ncol(train_X),lxl)
-bh_c <- glorot_weights(1,lxl)
-wo_c <- glorot_weights(lxl,2)
+lHl <- 10
+wh_c <- glorot_weights(ncol(train_X),lHl)
+bh_c <- glorot_weights(1,lHl)
+wo_c <- glorot_weights(lHl,2)
 bo_c <- glorot_weights(1,2)
 
 c_weights <- gradient_descent_m1(
-  X=as.matrix(train_X), Y=as.matrix(train_Y),
+  X = train_X, Y = train_Y,
   w_h_0 = wh_c, b_h_0 = bh_c, w_o_0 = wo_c, b_o_0 = bo_c,
-  epochs = 1e3, learning_rate = 1e-2, precision = 1e-4)
+  epochs = 1e4, learning_rate = 1e-3,
+  precision = 1e-5, batch_size = 32,
+  act.fn = swish, act.fn.derive = swish_d1)#,
+  #valid_X = valid_X, valid_Y = valid_Y)
 ```
 
 ```{r}
-plot(x = 1:length(c_weights$hist_loss), y = c_weights$hist_loss)
+plot(x = 1:length(c_weights$hist_loss), y = c_weights$hist_loss, type = "l")
 ```
 
+```{r}
+temp <- m1_predict(valid_X, w_h = c_weights$w_h, b_h = c_weights$b_h, w_o = c_weights$w_o, b_o = c_weights$b_o, act.fn = swish, act.fn.derive = swish_d1 )
+cbind(round(temp, digits = 4), valid_Y)
+```
 
 
 
