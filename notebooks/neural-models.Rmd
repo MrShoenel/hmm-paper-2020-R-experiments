@@ -14,7 +14,7 @@ We want to test our model `__m1__` using the weighted RSS loss (_wRSS_). The tes
 ```{r}
 set.seed(0xbeef)
 
-lxl <- 12
+lxl <- 5
 wh_xor <- glorot_weights(2,lxl)
 bh_xor <- glorot_weights(1,lxl)
 wo_xor <- glorot_weights(lxl,1)
@@ -30,7 +30,8 @@ Let's train the network!
 xor_weights <- gradient_descent_m1(
   X=XY_xor[,1:2], Y=matrix(data = XY_xor[,3], nrow = 4),
   w_h_0 = wh_xor, b_h_0 = bh_xor, w_o_0 = wo_xor, b_o_0 = bo_xor,
-  epochs = 1e4, learning_rate = 1e-1, precision = 1e-6)
+  epochs = 1e4, learning_rate = 1e-1, precision = 1e-5,
+  act.fn = relu, act.fn.derive = relu_d1)
 ```
 
 ```{r}
@@ -106,6 +107,10 @@ Let's attempt to learn some 1st-order commits.
 temp <- data2Densities_1stOrder(states = states, data = commits_t1[,], stateColumn = "label_t_0", split = 0.85, normalizePdfs = TRUE)
 
 train <- temp$train[,]
+train$y <- paste0(train$y_t1, train$y_t0)
+train <- balanceDatasetSmote(train, "y")
+train$y <- NULL
+
 train_Y <- as.matrix(train[, grepAnyOrAll("^y_t", colnames(train))])
 train_est <- train[, colnames(train) %in% c("est_t0", "est_t1")]
 nzv <- caret::nzv(train, names = TRUE, saveMetrics = TRUE)
@@ -114,17 +119,10 @@ train <- train[, !grepAnyOrAll(ignoreCols, colnames(train))]
 train <- train[, !grepAnyOrAll(c("label", "est_t", "y_t"), colnames(train))]
 train_X <- as.matrix(cbind(train[, grepAnyOrAll("^d_", colnames(train))], train_est))
 
-#### TEST
-#tempNames <- colnames(train)[grepAnyOrAll("^d_", colnames(train))]
-#train <- train[, colnames(train) %in% c(tempNames, "est_t0", "est_t1", "y_t0", "yt_1")]
-
-#valid <- temp$valid[, colnames(temp$valid) %in% colnames(train)]
-
-#
-#train_Y <- as.matrix(train[, grepAnyOrAll("^y_t", colnames(train))])
 valid <- temp$valid[, ]
 valid_X <- as.matrix(valid[, colnames(train_X)[!grepAnyOrAll("^y_t", colnames(train_X))]])
 valid_Y <- as.matrix(valid[, colnames(train_Y)])
+valid_Y_obsId <- valid$obsId
 ```
 
 Let's prepare some neural network for this:
@@ -152,8 +150,49 @@ plot(x = 1:length(c_weights$hist_loss), y = c_weights$hist_loss, type = "l")
 ```
 
 ```{r}
-temp <- m1_predict(valid_X, w_h = c_weights$w_h, b_h = c_weights$b_h, w_o = c_weights$w_o, b_o = c_weights$b_o, act.fn = swish, act.fn.derive = swish_d1 )
-cbind(round(temp, digits = 4), valid_Y)
+temp <- m1_predict(X = valid_X, Y_actual = valid_Y, w_h = c1_weights$w_h, b_h = c1_weights$b_h, w_o = c1_weights$w_o, b_o = c1_weights$b_o, act.fn = swish, act.fn.derive = swish_d1)
+# obsId(1), pred(2), sump(1), truth(2), loss(1)
+#temp <- data.frame(cbind(valid_Y_obsId, round(temp[, 1:2], digits = 4), round(temp[, 1] + temp[, 2], digits = 4), valid_Y, round(temp[, 3], digits = 4)))
+
+temp <- data.frame(
+  obsId = valid_Y_obsId,
+  pred_t1 = round(temp[, 1], digits = 4),
+  pred_t0 = round(temp[, 2], digits = 4),
+  pred_err = round(temp[, 3], digits = 4),
+  pred_sum = round(temp[, 1] + temp[, 2], digits = 4),
+  dens_sum = round(apply(valid_X, 1, sum), digits = 4),
+  dens_prod = round(apply(valid_X, 1, function(row) prod(row + 0.1)), digits = 5),
+  y_t1 = valid_Y[, 1],
+  y_t0 = valid_Y[, 2]
+)
+
+temp %>% arrange(obsId, -pred_sum)
+```
+
+## Test
+
+Let's try to learn from these results. The first test is to concatenate all preditions for one sample (transformed using all estimators) and just use a one-hot activation.
+
+```{r}
+predAsOneHot <- matrix(nrow = length(unique(temp$obsId)), ncol = 36)
+i <- 1
+for (oId in unique(temp$obsId)) {
+  data <- temp[temp$obsId == oId, ]
+  predAsOneHot[i, ] <- c(data$pred_t1, data$pred_t0, data$y_t1, data$y_t0)
+  i <- i + 1
+}
+predAsOneHot <- data.frame(predAsOneHot) # so we get col-names
+```
+```{r}
+nnet <- neuralnet::neuralnet(
+  formula = formula(paste0(paste(paste0("X", 1:18), collapse = " + "), "~.")),
+  data = predAsOneHot,
+  hidden = 10,
+  #act.fct = function(x) x / (1 + exp(-x)),
+  lifesign = "full",
+  threshold = 1e-3,
+  
+)
 ```
 
 

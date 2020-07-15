@@ -126,19 +126,28 @@ compute_grad_wRSS_m1 <- function(X, Y, w_h, b_h, w_o, b_o, act.fn = relu, act.fn
   }
   
   for (i in 1:N) {
+    # In each gradient, we need to compute the hidden layer
+    # and the following first derivate of sigmoid:
+    H <- matrix(nrow = 1, ncol = num_hidden)
+    for (n in 1:num_hidden) {
+      off <- (n-1) * w_per_hidden + 1
+      w <- w_h[off:(off + w_per_hidden - 1)]
+      H[1, n] <- act.fn(w %*% X[i, ] + b_h[n])
+    }
+    
+    # This is needed in the error functions:
+    m1_all <- m1(X[i, ], w_h = w_h, b_h = b_h, w_o = w_o, b_o = b_o,
+                 act.fn = act.fn, act.fn.derive = act.fn.derive)
+    
+    
     for (j in 1:lOl) {
-      # In each gradient, we need to compute the hidden layer
-      # and the following first derivate of sigmoid:
-      H <- matrix(nrow = 1, ncol = num_hidden)
-      for (n in 1:num_hidden) {
-        off <- (n-1) * w_per_hidden + 1
-        w <- w_h[off:(off + w_per_hidden - 1)]
-        H[1, n] <- act.fn(w %*% X[i, ] + b_h[n])
-      }
-      
+      # This is also needed for each of the following steps:
       w <- w_o[((j-1) * num_hidden + 1):(j * num_hidden)]
       grad_all <- sigmoid_d1(w %*% H[1, ] + b_o[j])
-      m1_all <- m1(X[i, ], w_h = w_h, b_h = b_h, w_o = w_o, b_o = b_o, act.fn = act.fn, act.fn.derive = act.fn.derive)
+      
+      if (!all(complete.cases(c(w, grad_all, m1_all)))) {
+        stop("42")
+      }
       
       
       # Now, for each of the four types of parameters, we'll
@@ -148,21 +157,40 @@ compute_grad_wRSS_m1 <- function(X, Y, w_h, b_h, w_o, b_o, act.fn = relu, act.fn
       # and finally each k-th hidden bias.
       
       # 1)
+      # The output-weights and -biases need an extra treatment,
+      # as we are dealing with a conditional gradient. If the
+      # current weight or bias is not part of the j-th model,
+      # then the gradient for that particular weight is 0.
       for (k in 1:l_w_o) {
-        w <- w_h[((modp(k, num_hidden) - 1) * num_inputs + 1):(modp(k, num_hidden) * num_inputs)]
-        m1_prime <- grad_all * act.fn(w %*% X[i, ] + b_h[modp(k, num_hidden)])
+        m1_prime <- 0 # only compute if k inside w_o
+        k_inside_w_o <- ceiling(k / num_hidden) == j
+        
+        if (k_inside_w_o) {
+          w <- w_h[((modp(k, num_hidden) - 1) * num_inputs + 1):(modp(k, num_hidden) * num_inputs)]
+          m1_prime <- grad_all * act.fn(w %*% X[i, ] + b_h[modp(k, num_hidden)])
+        }
         
         grad_w_o[k] <- grad_w_o[k] +
           2 * e[j] * (m1_all[j] * m1_prime - Y[i, j] * m1_prime)
       }
       
+      if (!all(complete.cases(grad_w_o))) {
+        stop("42")
+      }
+      
       # 2)
       # The partial derivative for each output-bias has no 'k' -
-      # it depends (and corresponds) only on j.
+      # it depends (and corresponds) only on j. Again, the output-
+      # bias' gradient depends on j. All other output-biases' gradient
+      # with k != j would be 0, so we can spare us the k-loop.
       m1_prime <- grad_all # They are equivalent in this case, as
       # we'd only multiply by 1.
       grad_b_o[j] <- grad_b_o[j] +
         2 * e[j] * (m1_all[j] * m1_prime - Y[i, j] * m1_prime)
+      
+      if (!all(complete.cases(grad_b_o))) {
+        stop("42")
+      }
       
       # 3)
       for (k in 1:l_w_h) {
@@ -177,6 +205,10 @@ compute_grad_wRSS_m1 <- function(X, Y, w_h, b_h, w_o, b_o, act.fn = relu, act.fn
           2 * e[j] * (m1_all[j] * m1_prime - Y[i, j] * m1_prime)
       }
       
+      if (!all(complete.cases(grad_w_h))) {
+        stop("42")
+      }
+      
       # 4)
       for (k in 1:l_b_h) {
         single_w <- w_o[(j-1) * num_hidden + k]
@@ -187,6 +219,10 @@ compute_grad_wRSS_m1 <- function(X, Y, w_h, b_h, w_o, b_o, act.fn = relu, act.fn
         
         grad_b_h[k] <- grad_b_h[k] +
           2 * e[j] * (m1_all[j] * m1_prime - Y[i, j] * m1_prime)
+      }
+      
+      if (!all(complete.cases(grad_b_h))) {
+        stop("42")
       }
     }
   }
@@ -259,13 +295,14 @@ gradient_descent_m1 <- function(X, Y, w_h_0, b_h_0, w_o_0, b_o_0, epochs = 1e2, 
 }
 
 
-m1_predict <- function(X, w_h, b_h, w_o, b_o, act.fn = relu, act.fn.derive = relu_d1) {
+m1_predict <- function(X, Y_actual, w_h, b_h, w_o, b_o, act.fn = relu, act.fn.derive = relu_d1) {
   N <- nrow(X)
   num_output <- length(b_o)
-  Y <- matrix(nrow = N, ncol = num_output)
+  Y <- matrix(nrow = N, ncol = num_output + 1)
   
   for (i in 1:N) {
-    Y[i, ] <- m1(x_i = X[i,], w_h = w_h, b_h = b_h, w_o = w_o, b_o = b_o, act.fn = act.fn, act.fn.derive = act.fn.derive)
+    Y[i, 1:num_output] <- m1(x_i = X[i,], w_h = w_h, b_h = b_h, w_o = w_o, b_o = b_o, act.fn = act.fn, act.fn.derive = act.fn.derive)
+    Y[i, 1+num_output] <- loss_wRSS_m1(X = X[i, ], Y = Y_actual[i, ], w_h = w_h, b_h = b_h, w_o = w_o, b_o = b_o, act.fn = act.fn, act.fn.derive = act.fn.derive)
   }
   
   return(Y)

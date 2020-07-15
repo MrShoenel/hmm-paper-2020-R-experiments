@@ -322,8 +322,8 @@ evaluateStatelessModel <- function(
 
 
 doWithParallelCluster <- function(expr, errorValue = NULL) {
-  cl <- makePSOCKcluster(detectCores())
-  registerDoParallel(cl)
+  cl <- parallel::makePSOCKcluster(detectCores())
+  doParallel::registerDoParallel(cl)
   
   result <- tryCatch(expr, error=function(cond) {
     if (!is.null(errorValue)) {
