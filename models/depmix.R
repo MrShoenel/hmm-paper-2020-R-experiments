@@ -291,6 +291,59 @@ computeDensitiesSum <- function(
 }
 
 
+computeLikelihoods <- function(
+  observations, densities, ignoreGenerations = FALSE
+) {
+  if (ignoreGenerations) {
+    # Remove _t_n-from end of all column names. This is necessary
+    # if the density-functions do not have that in their name either.
+    colnames(observations) <- gsub("_t_\\d+$", "", colnames(observations))
+  }
+  
+  # We use this to determine which features are present in an
+  # observation, and only compute the factors for those. This
+  # is a common case, when, e.g., the labels of observations
+  # were removed.
+  obsFeats <- colnames(observations)
+  
+  likelihoods <- matrix(nrow = nrow(observations), ncol = 0)
+  # For each density function, we compute a column:
+  for (densFunName in names(densities)) {
+    sp <- strsplit(densFunName, split = "__@dens@__")[[1]]
+    featName <- sp[1]
+    
+    if (!(featName %in% obsFeats)) {
+      next
+    }
+    
+    likelihoods <- cbind(
+      likelihoods,
+      sapply(observations[[featName]], densities[[densFunName]]))
+  }
+  
+  colnames(likelihoods) <- obsFeats
+  rownames(likelihoods) <- rownames(observations)
+  return(as.data.frame(likelihoods))
+}
+
+
+nominalToOneHot <- function(labels, states) {
+  oneHot <- matrix(data = 0, nrow = length(labels), ncol = length(states))
+  colnames(oneHot) <- paste0("__@onehot@__", states)
+  
+  for (idx in 1:length(labels)) {
+    oneHot[idx, which(states == labels[idx])] <- 1
+  }
+  
+  return(oneHot)
+}
+
+
+oneHotToNominal <- function(oneHot, states) {
+  return(sapply(apply(oneHot, 1, which.max), function(o) states[o]))
+}
+
+
 
 #' 1st-order Forward-algorithm for maximum-likelihood estimation of
 #' hidden states. Builds initial state- and transition-probabilities

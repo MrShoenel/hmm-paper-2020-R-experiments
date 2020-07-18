@@ -1,7 +1,8 @@
 
 estimateJointDensities <- function(
   data = data.frame(), densFunSuffix, ignoreGeneration = TRUE,
-  featuresPdfPmf = c(), featuresCdf = c(), normalizePdf = FALSE)
+  featuresPdfPmf = c(), featuresCdf = c(), normalizePdf = FALSE,
+  ecdfMinusOne = FALSE)
 {
   if (!is.data.frame(data) || ncol(data) < 1) {
     stop("The data given is not a data.frame or too sparse.")
@@ -38,8 +39,8 @@ estimateJointDensities <- function(
     } else if (doEcdf) {
       estFuncs[[densFunName]] <- (function() {
         tryCatch({
-          temp <- data[[feat]]
-          ecdf(temp)
+          cdf <- stats::ecdf(data[[feat]])
+          return(function(x) if (ecdfMinusOne) 1 - cdf(x) else cdf(x))
         }, error=function(cond) function(x) 0)
       })()
     } else {
@@ -651,7 +652,9 @@ balanceDatasetSmote <- function(data, stateColumn) {
 
 
 data2Densities_1stOrder <- function(
-  states, data, stateColumn, split = 0.85, doEcdf = FALSE, normalizePdfs = FALSE
+  states, data, stateColumn, split = 0.85, doEcdf = FALSE,
+  normalizePdfs = FALSE, ecdfMinusOne = FALSE,
+  returnDataOnly = FALSE
 ) {
   # First, we create a joined label for the data.
   stateColumn_t_1 <- gsub("_t_0$", "_t_1", stateColumn)
@@ -685,6 +688,18 @@ data2Densities_1stOrder <- function(
     valid$obsId <- 1:nrow(valid)
   }
   
+  # Also add an observation-ID to train as helper:
+  train$obsId <- 1:nrow(train)
+  
+  # Sometimes, we want the split functionality but
+  # skip the densities, so just return the data:
+  if (returnDataOnly) {
+    return(list(
+      train_data = train,
+      valid_data = valid
+    ))
+  }
+  
   
   # Third, estimate densities and PMFs over the train-data only:
   densities_ij <- list()
@@ -705,6 +720,7 @@ data2Densities_1stOrder <- function(
         densFunSuffix = paste0(state_i, state_j),
         ignoreGeneration = FALSE,
         normalizePdf = normalizePdfs,
+        ecdfMinusOne = ecdfMinusOne,
         featuresPdfPmf = if (doEcdf) c() else cn,
         featuresCdf = if (doEcdf) cn else c()
       )
@@ -815,7 +831,9 @@ data2Densities_1stOrder <- function(
   return(list(
     densities = densities_ij,
     train = train_final,
-    valid = valid_final
+    valid = valid_final,
+    train_data = train,
+    valid_data = valid
   ))
 }
 

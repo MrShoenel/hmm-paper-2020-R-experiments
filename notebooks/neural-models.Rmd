@@ -14,7 +14,7 @@ We want to test our model `__m1__` using the weighted RSS loss (_wRSS_). The tes
 ```{r}
 set.seed(0xbeef)
 
-lxl <- 5
+lxl <- 4
 wh_xor <- glorot_weights(2,lxl)
 bh_xor <- glorot_weights(1,lxl)
 wo_xor <- glorot_weights(lxl,1)
@@ -31,7 +31,8 @@ xor_weights <- gradient_descent_m1(
   X=XY_xor[,1:2], Y=matrix(data = XY_xor[,3], nrow = 4),
   w_h_0 = wh_xor, b_h_0 = bh_xor, w_o_0 = wo_xor, b_o_0 = bo_xor,
   epochs = 1e4, learning_rate = 1e-1, precision = 1e-5,
-  act.fn = relu, act.fn.derive = relu_d1)
+  act.fn = relu, act.fn.derive = relu_d1,
+  err.fn = RSS, err.fn.derive = RSS_d1)
 ```
 
 ```{r}
@@ -40,7 +41,9 @@ print(sapply(1:nrow(XY_xor), function(rn) {
     X = matrix(data = XY_xor[rn, 1:2], nrow = 1),
     Y = matrix(data = XY_xor[rn ,3], nrow = 1),
     w_h = xor_weights$w_h, b_h = xor_weights$b_h,
-    w_o = xor_weights$w_o, b_o = xor_weights$b_o)
+    w_o = xor_weights$w_o, b_o = xor_weights$b_o,
+    act.fn = relu, act.fn.derive = relu_d1,
+    err.fn = RSS)
 }))
 
 print(XY_xor)
@@ -48,7 +51,8 @@ print(XY_xor)
 print(sapply(1:nrow(XY_xor), function(rn) {
   m1(x_i = XY_xor[rn, 1:2],
     w_h = xor_weights$w_h, b_h = xor_weights$b_h,
-    w_o = xor_weights$w_o, b_o = xor_weights$b_o)
+    w_o = xor_weights$w_o, b_o = xor_weights$b_o,
+    act.fn = relu, act.fn.derive = relu_d1)
 }))
 ```
 
@@ -88,7 +92,7 @@ z <- outer(x, y, function(x1,x2) {
 persp(x, y, z,
       main="Perspective Plot of XOR",
       zlab = "m1 output",
-      theta = 325, phi = 25,
+      theta = 235, phi = 25,
       col = "springgreen", shade = 0.33)
 ```
 
@@ -107,9 +111,11 @@ Let's attempt to learn some 1st-order commits.
 temp <- data2Densities_1stOrder(states = states, data = commits_t1[,], stateColumn = "label_t_0", split = 0.85, normalizePdfs = TRUE)
 
 train <- temp$train[,]
-train$y <- paste0(train$y_t1, train$y_t0)
-train <- balanceDatasetSmote(train, "y")
-train$y <- NULL
+train_Y_obsId <- train$obsId
+train$obsId <- NULL
+#train$y <- paste0(train$y_t1, train$y_t0)
+#train <- balanceDatasetSmote(train, "y")
+#train$y <- NULL
 
 train_Y <- as.matrix(train[, grepAnyOrAll("^y_t", colnames(train))])
 train_est <- train[, colnames(train) %in% c("est_t0", "est_t1")]
@@ -150,20 +156,23 @@ plot(x = 1:length(c_weights$hist_loss), y = c_weights$hist_loss, type = "l")
 ```
 
 ```{r}
-temp <- m1_predict(X = valid_X, Y_actual = valid_Y, w_h = c1_weights$w_h, b_h = c1_weights$b_h, w_o = c1_weights$w_o, b_o = c1_weights$b_o, act.fn = swish, act.fn.derive = swish_d1)
+temp <- m1_predict(X = train_X, Y_actual = train_Y,
+                   w_h = c1_weights$w_h, b_h = c1_weights$b_h,
+                   w_o = c1_weights$w_o, b_o = c1_weights$b_o,
+                   act.fn = swish, act.fn.derive = swish_d1)
 # obsId(1), pred(2), sump(1), truth(2), loss(1)
 #temp <- data.frame(cbind(valid_Y_obsId, round(temp[, 1:2], digits = 4), round(temp[, 1] + temp[, 2], digits = 4), valid_Y, round(temp[, 3], digits = 4)))
 
 temp <- data.frame(
-  obsId = valid_Y_obsId,
+  obsId = train_Y_obsId,
   pred_t1 = round(temp[, 1], digits = 4),
   pred_t0 = round(temp[, 2], digits = 4),
   pred_err = round(temp[, 3], digits = 4),
   pred_sum = round(temp[, 1] + temp[, 2], digits = 4),
-  dens_sum = round(apply(valid_X, 1, sum), digits = 4),
-  dens_prod = round(apply(valid_X, 1, function(row) prod(row + 0.1)), digits = 5),
-  y_t1 = valid_Y[, 1],
-  y_t0 = valid_Y[, 2]
+  dens_sum = round(apply(train_X, 1, sum), digits = 4),
+  dens_prod = round(apply(train_X, 1, function(row) prod(row + 0.1)), digits = 5),
+  y_t1 = train_Y[, 1],
+  y_t0 = train_Y[, 2]
 )
 
 temp %>% arrange(obsId, -pred_sum)
@@ -174,27 +183,81 @@ temp %>% arrange(obsId, -pred_sum)
 Let's try to learn from these results. The first test is to concatenate all preditions for one sample (transformed using all estimators) and just use a one-hot activation.
 
 ```{r}
-predAsOneHot <- matrix(nrow = length(unique(temp$obsId)), ncol = 36)
+predAsOneHot <- matrix(nrow = length(unique(temp$obsId)), ncol = 49)
 i <- 1
 for (oId in unique(temp$obsId)) {
   data <- temp[temp$obsId == oId, ]
-  predAsOneHot[i, ] <- c(data$pred_t1, data$pred_t0, data$y_t1, data$y_t0)
+  idx11 <- which(data$y_t1 == 1 & data$y_t0 == 1)
+  vec11 <- rep(0, 9)
+  vec11[idx11] <- 1
+  predAsOneHot[i, ] <- c(data$pred_t1, sd(data$pred_t1), data$pred_t0, sd(data$pred_t0), data$dens_sum, sd(data$dens_sum), data$dens_prod, sd(data$dens_prod), vec11)
   i <- i + 1
 }
 predAsOneHot <- data.frame(predAsOneHot) # so we get col-names
+scalerPredAsOneHot <- caret::preProcess(predAsOneHot, method = c("center", "scale"))
+predAsOneHot <- predict(scalerPredAsOneHot, predAsOneHot)
 ```
 ```{r}
+set.seed(23)
 nnet <- neuralnet::neuralnet(
-  formula = formula(paste0(paste(paste0("X", 1:18), collapse = " + "), "~.")),
+  formula = formula(paste0(paste(paste0("X", 41:49), collapse = " + "), "~.")),
   data = predAsOneHot,
-  hidden = 10,
+  hidden = c(8, 4),
+  startweights = c(glorot_weights(40, 8), glorot_weights(8, 4)),
   #act.fct = function(x) x / (1 + exp(-x)),
   lifesign = "full",
-  threshold = 1e-3,
-  
+  threshold = 5e-3,
+  stepmax = 15e4 # usually takes 50k steps, allow up to 150k
 )
 ```
 
+Now we have another network that can be used as a voting scheme:
+
+```{r}
+plot(nnet)
+```
+
+In order to check our validation data, we need to make predictions of it with the first network, then transform these into the one-hot data and predict with the 2nd network.
+
+```{r}
+temp_valid <- m1_predict(X = valid_X, Y_actual = valid_Y,
+                   w_h = c1_weights$w_h, b_h = c1_weights$b_h,
+                   w_o = c1_weights$w_o, b_o = c1_weights$b_o,
+                   act.fn = swish, act.fn.derive = swish_d1)
+
+temp_valid <- data.frame(
+  obsId = valid_Y_obsId,
+  pred_t1 = round(temp_valid[, 1], digits = 4),
+  pred_t0 = round(temp_valid[, 2], digits = 4),
+  pred_err = round(temp_valid[, 3], digits = 4),
+  pred_sum = round(temp_valid[, 1] + temp_valid[, 2], digits = 4),
+  dens_sum = round(apply(valid_X, 1, sum), digits = 4),
+  dens_prod = round(apply(valid_X, 1, function(row) prod(row + 0.1)), digits = 5),
+  y_t1 = valid_Y[, 1],
+  y_t0 = valid_Y[, 2]
+)
+```
+```{r}
+predAsOneHot_valid <- matrix(nrow = length(unique(temp_valid$obsId)), ncol = 50)
+i <- 1
+for (oId in unique(temp_valid$obsId)) {
+  data <- temp_valid[temp_valid$obsId == oId, ]
+  idx11 <- which(data$y_t1 == 1 & data$y_t0 == 1)
+  vec11 <- rep(0, 9)
+  vec11[idx11] <- 1
+  predAsOneHot_valid[i, ] <- c(data$pred_t1, sd(data$pred_t1), data$pred_t0, sd(data$pred_t0), data$dens_sum, sd(data$dens_sum), data$dens_prod, sd(data$dens_prod), vec11, oId)
+  i <- i + 1
+}
+predAsOneHot_valid <- data.frame(predAsOneHot_valid) # so we get col-names
+predAsOneHot_valid <- predict(scalerPredAsOneHot, predAsOneHot_valid)
+```
+```{r}
+pred_valid <- predict(nnet, newdata = predAsOneHot_valid[, paste0("X", 1:40)])
+cbind(
+  round(pred_valid, digits = 3),
+  apply(pred_valid, 1, which.max),
+  predAsOneHot_valid[, "X50"])
+```
 
 
 

@@ -1,0 +1,125 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+```{r}
+source("../helpers.R", echo = FALSE)
+source("../models/conddens.R", echo = FALSE)
+source("../models/depmix.R", echo = FALSE)
+source("../models/neural.R", echo = FALSE)
+source("../models/rssOrdered.R", echo = FALSE)
+```
+
+
+# Introduction
+
+In this notebook, we evaluate all the voting schemes applicable to data represented as conditional densities. We will evaluate 1st-order joint conditional density (JCD) models, based on the $\boldsymbol f$-estimator. These estimators will be used in the $\boldsymbol D$-models. The difference between $\boldsymbol e$- and $\boldsymbol f$-estimators is, that the latter also include the data from their previous states.
+
+The voting schemes we test here are applicable to all JCD models (A through D), but we will only do an extensive hyperparameter search using the D-models, as they represent an advancement over the C-models, which performed best thus far.
+
+## Voting Schemes
+
+Voting schemes are necessary, because we get a potential answer for every estimator we pass a validation sample through. The purpose of a voting scheme is to aggregate all answers from all estimators, and pick the best-matching estimator based on some heuristics, statistics or model we learn.
+
+## Ordered Loss
+
+For every set of training samples, we will train an extra neural network. However, prior results showed that we cannot train such a network with unweighted losses, such as RSS or MSE. Therefore, we have developed three new loss functions that put a weight on each output, according to the outputs' order. Only with such losses it is possible to train models for our use-case.
+
+
+
+# Hyperparameters
+
+We are evaluating a tremendous amount of hyperparameters, which requires some serious parallel computation. Below, we define the full grid.
+
+```{r}
+set.seed(0xc0de)
+olHp <- expand.grid(
+  # This is for the cross validation. All pseudo-random functionality
+  # should use this.
+  resampleSeed = as.integer(runif(5, max = 2**31)),
+  batchSize = c(8, 16, 32, 64),
+  # There is only one hidden layer.
+  neurons = c(5, 10, 17, 30, 50),
+  err.fct = c("rss", "wRSS", "omeRSS", "ome2RSS"),
+  act.fct = c("Lrelu", "swish"),
+  # Whether to oversample the unbalanced data before training.
+  oversample = c(TRUE, FALSE),
+  learningRate = c(0.1, 0.01, 0.001),
+  useKeywords = c(TRUE, FALSE),
+  # data is always scaled, but scaling for density(data) is conditional.
+  # If keywords are included, there added to data before any other steps,
+  # hence if data is scaled, so are the keywords.
+  useDatatype = c("data", "density", "both", "density_scaled", "both_scaled"),
+  # How to compute the densities for each continuous random variable.
+  # Since PDFs are not necessary in the codomain [0,1], we have an extra
+  # option to use scaled PDFs.
+  dens.fct = c("ecdf", "1-ecdf", "epdf", "epdf_scaled")
+)
+```
+
+Attach an ID to each set of hyperparameters - we need that because we will also add a filter at runtime as we're using many instances to compute this.
+
+```{r}
+# Attach an ID to each hyperparameter set:
+olHp$ID <- 1:nrow(olHp)
+# Insert filter here:
+#olHp <- olHp[olHp$oversample == FALSE, ]
+```
+
+As of above, we will compute a total of `r nrow(olHp)` sets of hyperparameters.
+
+
+# Function used in Training
+
+Now we are going to define one large function that will take one set of hyperparameters and execute all evaluations neccessary, before returning all of the results.
+
+```{r}
+# Mostly columns that could be used to identify a column. Note that
+# we keep "label", as it'll be removed for inferencing only.
+ignoreCols <- c(
+  "project", # because of scarce data, we train and evaluate only cross-project
+  "commitId",
+  "labelledBefore",
+  "reasonOrRule",
+  "RepoPathOrUrl",
+  "CommitterName",
+  "CommitterTime",
+  "CommitterEmail",
+  "CommitterNominalLabel",
+  "ParentCommitSHA1s",
+  "Message",
+  "branch",
+  "SHA1",
+  "AuthorName",
+  "AuthorTime",
+  "AuthorEmail",
+  "AuthorNominalLabel"
+)
+```
+
+
+```{r}
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

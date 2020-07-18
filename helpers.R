@@ -296,6 +296,7 @@ doRfe <- function(data, y, yColName = "label_t", ignoreCols, number = 10, repeat
   return(resultsRfe)
 }
 
+
 evaluateStatelessModel <- function(
   ds, modelName, yColName, trP = 0.8, rcvNumber = 5, rcvRepeats = 3
 ) {
@@ -322,7 +323,7 @@ evaluateStatelessModel <- function(
 
 
 doWithParallelCluster <- function(expr, errorValue = NULL) {
-  cl <- parallel::makePSOCKcluster(detectCores())
+  cl <- parallel::makePSOCKcluster(parallel::detectCores())
   doParallel::registerDoParallel(cl)
   
   result <- tryCatch(expr, error=function(cond) {
@@ -331,14 +332,13 @@ doWithParallelCluster <- function(expr, errorValue = NULL) {
     }
     return(cond)
   }, finally = {
-    stopCluster(cl)
-    registerDoSEQ()
+    parallel::stopCluster(cl)
+    foreach::registerDoSEQ()
     cl <- NULL
     gc()
   })
   return(result)
 }
-
 
 
 extractChain <- function(data, idColData, idColChain, t, chains, chainId) {
@@ -363,11 +363,212 @@ extractChain <- function(data, idColData, idColChain, t, chains, chainId) {
 }
 
 
+detectCommitKeywords <- function(messages, use.binary = TRUE) {
+  # (1) add (2) allow (3) bug (4) chang (5) error (6) fail (7) fix (8) implement
+  # (9) improv (10) issu (11) method (12) new (13) npe
+  # (14) refactor (15) remov (16) report (17) set (18) support
+  # (19) test (20) use
+  words <- c("add", "allow", "bug", "chang", "error", "fail", "fix", "implement",
+             "improv", "issu", "method", "new", "npe",
+             "refactor", "remov", "report", "set", "support",
+             "test", "use")
+  
+  trueVal <- if (use.binary) 1 else TRUE
+  falseVal <- if (use.binary) 0 else FALSE
+  
+  kw <- matrix(nrow = length(messages), ncol = length(words))
+  for (i in 1:length(messages)) {
+    mesVec <- strsplit(as.character(messages[i]), "\\s+")[[1]]
+    kw[i, ] <- sapply(words, function(word) {
+      if (any(grepl(x = mesVec, pattern = word, ignore.case = TRUE))) trueVal else falseVal
+    })
+  }
+  
+  kw <- data.frame(kw)
+  colnames(kw) <- paste0("kw_", words)
+  return(kw)
+}
 
 
+confmat2Dataframe <- function(cm, prefix) {
+  clazzes <- colnames(cm$table)
+  nClass <- length(clazzes)
+  # We store from overall:
+  # (4) Accuracy, Kappa, AccuracyNull (ZeroR), McnemarPValue,
+  # then, for each class we store:
+  # (N*5) Precision, Recall, F1, Prevalence, Balanced Accuracy
+  df <- data.frame(matrix(nrow = 1, ncol = 4 + nClass * 5))
+  
+  colsO <- c("Accuracy", "Kappa", "AccuracyNull", "McnemarPValue")
+  colsC <- c("Precision", "Recall", "F1", "Prevalence", "BalancedAccuracy")
+  colsCExpanded <- c(sapply(clazzes, function(clz) {
+    paste0(colsC, paste0("_", clz))
+  }))
+  
+  colnames(df) <- c(colsO, colsCExpanded)
+
+  o <- cm$overall
+  for (c in colsO) {
+    df[1, c] <- o[[c]]
+  }
+  
+  for (clz in clazzes) {
+    bc <- as.data.frame(temp$byClass)[paste("Class:", clz), ]
+    colnames(bc) <- gsub("\\s+", "", colnames(bc))
+    
+    for (c in colsC) {
+      df[1, paste0(c, "_", clz)] <- bc[[c]]
+    }
+  }
+  
+  # Let's prepend the prefix:
+  colnames(df) <- paste0(paste0(prefix, "_"), colnames(df))
+  
+  return(df)
+}
 
 
+generateDataForHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
+  
+  # First, we create a joined label for the data.
+  stateColumn_t_1 <- gsub("_t_0$", "_t_1", stateColumn)
+  
+  # Let's check if we need to append the keywords to the data first:
+  if (hp$useKeywords) {
+    data <- cbind(data, dataKw)
+  }
+  
+  # If this is true, then no densities are used. We can still
+  # use data2densities, but let's tell it to skip the densities.
+  useDens <- hp$useDatatype %in% c("density", "both", "density_scaled", "both_scaled")
+  scaleDens <- hp$useDatatype %in% c("density_scaled", "both_scaled")
+  useData <- hp$useKeywords || hp$useDatatype %in% c("data", "both", "both_scaled")
+  useOnlyData <- hp$useDatatype == "data"
+  
+  set.seed(hp$resampleSeed)
+  trainValid <- data2Densities_1stOrder(
+    states = states, data = data, stateColumn = stateColumn,
+    split = 0.8, returnDataOnly = useOnlyData,
+    doEcdf = hp$dens.fct == "ecdf",
+    normalizePdfs = hp$dens.fct == "epdf_scaled",
+    ecdfMinusOne = hp$dens.fct == "1-ecdf")
+  
+  train <- if (useOnlyData) trainValid$train_data else trainValid$train[, ]
+  train_Y_obsId <- train$obsId
+  train$obsId <- NULL
+  
+  yCols <- if (useOnlyData) c(stateColumn_t_1, stateColumn) else c("y_t1", "y_t0")
+  
+  # Sometimes we need to oversample the training data to account
+  # for the non-even distribution of class labels.
+  if (hp$oversample) {
+    # What we do here is to create a combined label and then balance on that.
+    # After balancing, we split the combined label again and reassign the
+    # correct classes for each state.
+    train$y__ <- paste0(train[[yCols[1]]], "__|__", train[[yCols[2]]])
+    
+    train <- balanceDatasetSmote(train, "y__")
+    train[[yCols[1]]] <- sapply(train$y__, function(l) as.integer(strsplit(l, "__|__")[[1]][1]))
+    train[[yCols[2]]] <- sapply(train$y__, function(l) as.integer(strsplit(l, "__|__")[[1]][3]))
+    train$y__ <- NULL
+    
+    if (!useOnlyData) {
+      train$est_t1 <- as.integer(round(train$est_t1))
+      train$est_t0 <- as.integer(round(train$est_t0))
+    }
+  }
+  
+  train_Y <- as.matrix(train[, grepAnyOrAll(paste0("^", yCols, "$"), colnames(train))])
+  train_est <- if (useOnlyData) NULL else train[, colnames(train) %in% c("est_t0", "est_t1")]
+  
+  # Let's remove columns we ALWAYS ignore:
+  train <- train[, !grepAnyOrAll(ignoreCols, colnames(train))]
+  
+  # Let's remove columns with zero variance:
+  nzv <- caret::nzv(train, names = TRUE, saveMetrics = TRUE)
+  train <- train[, !nzv$zeroVar]
+  # Then remove labels or what kind of estimator was used:
+  train <- train[, !grepAnyOrAll(c("label", "est_t", "y_t"), colnames(train))]
+  
+  # Now we need to make some final selection, and choose between
+  # data, density(data), or both:
+  if (useOnlyData) {
+    # Remove density data:
+    train <- train[, !grepAnyOrAll("^d_", colnames(train))]
+  } else if (hp$useDatatype %in% c("density", "density_scaled")) {
+    # Remove the ordinary data (but NOT the keywords):
+    train <- train[, grepAnyOrAll(c("^d_", "^kw_"), colnames(train))]
+  } # else keep both, no sub-selection required.
+  
+  cols_data <- !grepAnyOrAll("^d_", colnames(train))
+  cols_dens <- !cols_data
+  
+  scaler_train_data_X <- if (useData) {
+    caret::preProcess(train[, cols_data], method = c("center", "scale")) } else { NULL }
+  scaler_train_dens_X <- if (useDens && scaleDens) {
+    caret::preProcess(train[, cols_dens], method = c("center", "scale")) } else { NULL }
+  
+  # The validation data
+  valid <- if (useOnlyData) trainValid$valid_data else trainValid$valid[, ]
+  valid_Y_obsId <- valid$obsId
+  valid_Y <- as.matrix(valid[, colnames(train_Y)])
+  valid <- valid[, colnames(valid) %in% colnames(train)]
+  
+  if (useData) {
+    if (useDens) {
+      if (scaleDens) {
+        train_X <- cbind(
+          as.matrix(stats::predict(scaler_train_data_X, train[, cols_data])),
+          as.matrix(stats::predict(scaler_train_dens_X, train[, cols_dens]))
+        )
+        valid_X <- cbind(
+          as.matrix(stats::predict(scaler_train_data_X, valid[, cols_data])),
+          as.matrix(stats::predict(scaler_train_dens_X, valid[, cols_dens]))
+        )
+      } else {
+        train_X <- cbind(
+          as.matrix(stats::predict(scaler_train_data_X, train[, cols_data])),
+          as.matrix(train[, cols_dens])
+        )
+        valid_X <- cbind(
+          as.matrix(stats::predict(scaler_train_data_X, valid[, cols_data])),
+          as.matrix(valid[, cols_dens])
+        )
+        
+      }
+    } else {
+      # Only data, no density
+      train_X <- as.matrix(stats::predict(scaler_train_data_X, train[, cols_data]))
+      valid_X <- as.matrix(stats::predict(scaler_train_data_X, valid[, cols_data]))
+    }
+  } else {
+    # Only density
+    if (scaleDens) {
+      train_X <- as.matrix(stats::predict(scaler_train_dens_X, train[, cols_dens]))
+      valid_X <- as.matrix(stats::predict(scaler_train_dens_X, valid[, cols_dens]))
+    } else {
+      train_X <- train[, cols_dens]
+      valid_X <- valid[, cols_dens]
+    }
+  }
+  
+  return(list(
+    train_X = train_X,
+    valid_X = valid_X,
+    train_Y = train_Y,
+    valid_Y = valid_Y,
+    train_Y_obsId = train_Y_obsId,
+    valid_Y_obsId = valid_Y_obsId,
+    scaler_train_data_X = scaler_train_data_X,
+    scaler_train_dens_X = scaler_train_dens_X
+  ))
+}
 
+
+evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
+  data <- generateDataForHpOrderedLoss(hp = hp, data = data, dataKw = dataKw, states = states, stateColumn = stateColumn)
+  
+}
 
 
 
