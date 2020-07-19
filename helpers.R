@@ -390,7 +390,7 @@ detectCommitKeywords <- function(messages, use.binary = TRUE) {
 }
 
 
-confmat2Dataframe <- function(cm, prefix) {
+confmat2Dataframe <- function(cm, prefix = NULL) {
   clazzes <- colnames(cm$table)
   nClass <- length(clazzes)
   # We store from overall:
@@ -413,7 +413,7 @@ confmat2Dataframe <- function(cm, prefix) {
   }
   
   for (clz in clazzes) {
-    bc <- as.data.frame(temp$byClass)[paste("Class:", clz), ]
+    bc <- as.data.frame(cm$byClass)[paste("Class:", clz), ]
     colnames(bc) <- gsub("\\s+", "", colnames(bc))
     
     for (c in colsC) {
@@ -421,10 +421,50 @@ confmat2Dataframe <- function(cm, prefix) {
     }
   }
   
-  # Let's prepend the prefix:
-  colnames(df) <- paste0(paste0(prefix, "_"), colnames(df))
+  # Let's conditionally prepend the prefix:
+  if (!is.null(prefix)) {
+    colnames(df) <- paste0(paste0(prefix, "_"), colnames(df))
+  }
   
   return(df)
+}
+
+
+firstOrderPredToFlatConfmats <- function(groundTruth, pred, states) {
+  # Creates 'aa', 'ac', .., 'pp'
+  statesCombined <- apply(expand.grid(
+    a = states,
+    b = states
+  ), 1, function(r) paste0(r[1], r[2]))
+  
+  gt_L <- sapply(groundTruth, function(gt) stringi::stri_sub(gt, from = 1, to = 1))
+  gt_R <- sapply(groundTruth, function(gt) stringi::stri_sub(gt, from = 2, to = 2))
+  pr_L <- sapply(pred, function(pr) stringi::stri_sub(pr, from = 1, to = 1))
+  pr_R <- sapply(pred, function(pr) stringi::stri_sub(pr, from = 2, to = 2))
+  
+  cm <- caret::confusionMatrix(
+    data = factor(pred, levels = statesCombined),
+    reference = factor(groundTruth, levels = statesCombined),
+    mode = "everything")
+  res_both <- confmat2Dataframe(cm = cm, prefix = "both")
+  
+  cm <- caret::confusionMatrix(
+    data = factor(pr_L, levels = states),
+    reference = factor(gt_L, levels = states),
+    mode = "everything")
+  res_left <- confmat2Dataframe(cm = cm, prefix = "left")
+  
+  cm <- caret::confusionMatrix(
+    data = factor(pr_R, levels = states),
+    reference = factor(gt_R, levels = states),
+    mode = "everything")
+  res_right <- confmat2Dataframe(cm = cm, prefix = "right")
+  
+  return(list(
+    both = res_both,
+    left = res_left,
+    right = res_right
+  ))
 }
 
 
@@ -437,6 +477,9 @@ generateDataForHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) 
   if (hp$useKeywords) {
     data <- cbind(data, dataKw)
   }
+  
+  # Remove features we ALWAYS ignore:
+  data <- data[, !grepAnyOrAll(ignoreCols, colnames(data))]
   
   # If this is true, then no densities are used. We can still
   # use data2densities, but let's tell it to skip the densities.
@@ -457,7 +500,7 @@ generateDataForHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) 
   train_Y_obsId <- train$obsId
   train$obsId <- NULL
   
-  yCols <- if (useOnlyData) c(stateColumn_t_1, stateColumn) else c("y_t1", "y_t0")
+  yCols <- if (useOnlyData) c(stateColumn_t_1, stateColumn) else c("y_t0", "y_t1")
   
   # Sometimes we need to oversample the training data to account
   # for the non-even distribution of class labels.
@@ -478,7 +521,7 @@ generateDataForHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) 
     }
   }
   
-  train_Y <- as.matrix(train[, grepAnyOrAll(paste0("^", yCols, "$"), colnames(train))])
+  train_Y <- as.matrix(train[, sort(colnames(train)[grepAnyOrAll(paste0("^", yCols, "$"), colnames(train))])])
   train_est <- if (useOnlyData) NULL else train[, colnames(train) %in% c("est_t0", "est_t1")]
   
   # Let's remove columns we ALWAYS ignore:
@@ -510,6 +553,7 @@ generateDataForHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) 
   
   # The validation data
   valid <- if (useOnlyData) trainValid$valid_data else trainValid$valid[, ]
+  valid_est <- if (useOnlyData) NULL else valid[, colnames(valid) %in% c("est_t0", "est_t1")]
   valid_Y_obsId <- valid$obsId
   valid_Y <- as.matrix(valid[, colnames(train_Y)])
   valid <- valid[, colnames(valid) %in% colnames(train)]
@@ -552,6 +596,13 @@ generateDataForHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) 
     }
   }
   
+  if (!useOnlyData) {
+    # These belong to the input data and designate from which density
+    # estimator the data is coming.
+    train_X <- cbind(train_X, train_est)
+    valid_X <- cbind(valid_X, valid_est)
+  }
+  
   return(list(
     train_X = train_X,
     valid_X = valid_X,
@@ -565,9 +616,343 @@ generateDataForHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) 
 }
 
 
+#' In this function, we perform a voting for each scheme, depending
+#' on the data (not all schemes can always be performed). The result
+#' is a list with all applicable results. If the voting for one scheme
+#' failed, the result list contains an error message for that scheme.
+#' If everything worked, the result contains a flattened confusion
+#' matrix. If not applicable, the entry will be NULL.
 evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
-  data <- generateDataForHpOrderedLoss(hp = hp, data = data, dataKw = dataKw, states = states, stateColumn = stateColumn)
+  data <- generateDataForHpOrderedLoss(
+    hp = hp, data = data, dataKw = dataKw,
+    states = states, stateColumn = stateColumn)
   
+  useDens <- hp$useDatatype %in% c("density", "both", "density_scaled", "both_scaled")
+  isOversampled <- hp$oversample
+  
+  # Let's first produce the ground-truth from our 2-times one-hot encoding:
+  unqObsIds <- sort(unique(data$valid_Y_obsId))
+  validJoined <- data.frame(cbind(data$valid_X$est_t1, data$valid_X$est_t0, data$valid_Y, data$valid_Y_obsId))
+  colnames(validJoined) <- c("est_t1", "est_t0", "y_t1", "y_t0", "obsId")
+  groundTruth <- sapply(unqObsIds, function(oId) {
+    temp <- validJoined[validJoined$obsId == oId & validJoined$y_t1 == 1 & validJoined$y_t0 == 1, ]
+    paste0(states[temp$est_t1], states[temp$est_t0])
+  })
+  # Left is t-1, right is t0
+  groundTruth_L <- sapply(groundTruth, function(gt) stringi::stri_sub(gt, from = 1, to = 1))
+  groundTruth_R <- sapply(groundTruth, function(gt) stringi::stri_sub(gt, from = 2, to = 2))
+  
+  results <- list(
+    One = NULL,
+    Two = NULL,
+    Three = NULL,
+    Four = NULL
+  )
+  
+  
+  # Let's do the voting, scheme by scheme
+  if (useDens) {
+    # We can do the schemes 'One' and 'Two', they require density. For scheme
+    # One, we produce a matrix where each column corresponds to one specific
+    # estimator. The estimator the data was generated with is stored in the
+    # data in the columns 'est_t1', 'est_t0' as integers and refers to the
+    # index in the 'states'-vector. A fully-qualified estimator thus is the
+    # concat of both states.
+    
+    logTols <- c(1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8)
+    
+    # Creates 'aa', 'ac', .., 'pp'
+    statesCombined <- apply(expand.grid(
+      a = states,
+      b = states
+    ), 1, function(r) paste0(r[1], r[2]))
+    
+    # Techniques a/b/c are the first three columns, and the next 2*n columns
+    # are technique d with a different logTol every time (prod/sum). The rows
+    # are the predictions. (a/b/c) are: max(prod), max(sum), min(sd).
+    pred_1 <- matrix(ncol = 3 + 2 * length(logTols), nrow = length(unqObsIds))
+    colnames(pred_1) <- c(paste0("simple_", c("a", "b", "c")),
+                          paste0("d_prod_", formatC(logTols, format = "e", digits = 0)),
+                          paste0("d_sum_", formatC(logTols, format = "e", digits = 0)))
+    rownames(pred_1) <- unqObsIds
+    
+    for (obsId in unqObsIds) {
+      
+      # Cols is estimators, rows is sum, prod, sd, log10(prod), log10(sum)
+      votemat <- matrix(nrow = 5, ncol = length(states)**2)
+      colnames(votemat) <- statesCombined
+      validSample <- data$valid_X[data$valid_Y_obsId == obsId, ]
+      
+      for (state_i in states) {
+        for (state_j in states) {
+          estimatorName <- paste0(state_i, state_j)
+          estimatorData <- validSample[validSample$est_t1 == which(states == state_i) & validSample$est_t0 == which(states == state_j), !grepAnyOrAll("^est_t", colnames(validSample))]
+          
+          votemat[1, estimatorName] <- prod(estimatorData + 0.1)
+          votemat[2, estimatorName] <- sum(estimatorData)
+          votemat[3, estimatorName] <- sd(estimatorData)
+          # log10's of prod and sum
+          votemat[4, estimatorName] <- log10(votemat[1, estimatorName])
+          votemat[5, estimatorName] <- log10(votemat[2, estimatorName])
+        }
+      }
+      
+      # The vote-matrix is complete now, let's pick the vote for the current observation.
+      # a) (max(prod))
+      pred_1[obsId, "simple_a"] <- names(which.max(votemat[1, ]))
+      # b) (max(sum))
+      pred_1[obsId, "simple_b"] <- names(which.max(votemat[2, ]))
+      # c) (min(sd))
+      pred_1[obsId, "simple_c"] <- names(which.min(votemat[3, ]))
+      
+      # d-1) (prod) Let's pick the votes using each log-tolerance:
+      # d-2) (sum)
+      for (lt in logTols) {
+        ltStr <- formatC(lt, format = "e", digits = 0)
+        
+        maxLogProd <- votemat[4, which.max(votemat[4, ])]
+        maxLogSum <- votemat[5, which.max(votemat[5, ])]
+        
+        equalLogsProd <- which(votemat[4, ] >= (maxLogProd - lt))
+        equalLogsSum <- which(votemat[5, ] >= (maxLogSum - lt))
+        
+        minSdProd <- which.min(votemat[3, equalLogsProd])
+        minSdSum <- which.min(votemat[3, equalLogsSum])
+        
+        pred_1[obsId, paste0("d_prod_", ltStr)] <- names(minSdProd)
+        pred_1[obsId, paste0("d_sum_", ltStr)] <- names(minSdSum)
+      }
+    }
+    
+    resultsOne <- list()
+    for (resType in colnames(pred_1)) {
+      resultsOne[[resType]] <- firstOrderPredToFlatConfmats(
+        groundTruth = groundTruth, pred = pred_1[, resType], states = states)
+    }
+    
+    results$One <- resultsOne
+
+        
+    #########################################################################
+    ############  Scheme Two
+    #########################################################################
+    
+    # For scheme Two, we combine the estimators by grouping them. Each group
+    # represents all estimators that end in a state t_0 (group estimators
+    # with same state for t_0). Also, make a votematrix grouping the estimators
+    # that start in a specific state t-1, so that we can test whether this also
+    # works backward.
+    # Again, we have a couple of simple techniques a/b/c and a few that depend
+    # on a log-tolerance and standard deviation for votes within a group.
+    
+    
+    # This is exactly like pred_1, except that we do everything twice: first
+    # forward, then backward.
+    pred_2 <- matrix(ncol = 2 * (3 + 2 * length(logTols)), nrow = length(unqObsIds))
+    cn_pred_2 <- c(paste0("simple_", c("a", "b", "c")),
+                   paste0("d_prod_", formatC(logTols, format = "e", digits = 0)),
+                   paste0("d_sum_", formatC(logTols, format = "e", digits = 0)))
+    colnames(pred_2) <- c(
+      paste0("forward_", cn_pred_2),
+      paste0("backward_", cn_pred_2))
+
+    rownames(pred_2) <- unqObsIds
+    
+    for (obsId in unqObsIds) {
+      
+      validSample <- data$valid_X[data$valid_Y_obsId == obsId, ]
+      
+      # Cols is estimators, rows is sum, prod, sd, log10(sum), log10(prod)
+      # 'to_t0' is forward, and 'to_t1' is backward.
+      votemat_to_t0 <- matrix(nrow = 5, ncol = length(states))
+      colnames(votemat_to_t0) <- states
+      votemat_to_t1 <- matrix(nrow = 5, ncol = length(states))
+      colnames(votemat_to_t1) <- states
+      
+      for (state in states) {
+        estimatorData_to_t0 <- validSample[validSample$est_t0 == which(states == state), !grepAnyOrAll("^est_t", colnames(validSample))]
+        estimatorData_to_t1 <- validSample[validSample$est_t1 == which(states == state), !grepAnyOrAll("^est_t", colnames(validSample))]
+        
+        votemat_to_t0[1, state] <- prod(apply(estimatorData_to_t0, 1, sum))
+        votemat_to_t0[2, state] <- sum(estimatorData_to_t0)
+        votemat_to_t0[3, state] <- sd(apply(estimatorData_to_t0, 1, sum))
+        votemat_to_t0[4, state] <- log10(votemat_to_t0[1, state])
+        votemat_to_t0[5, state] <- log10(votemat_to_t0[2, state])
+        
+        votemat_to_t1[1, state] <- prod(apply(estimatorData_to_t1, 1, sum))
+        votemat_to_t1[2, state] <- sum(estimatorData_to_t1)
+        votemat_to_t1[3, state] <- sd(apply(estimatorData_to_t1, 1, sum))
+        votemat_to_t1[4, state] <- log10(votemat_to_t1[1, state])
+        votemat_to_t1[5, state] <- log10(votemat_to_t1[2, state])
+      }
+      
+      
+      # The vote-matrix is complete now, let's pick the vote for the current observation.
+      # a) (max(prod))
+      pred_2[obsId, "forward_simple_a"] <- names(which.max(votemat_to_t0[1, ]))
+      pred_2[obsId, "backward_simple_a"] <- names(which.max(votemat_to_t1[1, ]))
+      # b) (max(sum))
+      pred_2[obsId, "forward_simple_b"] <- names(which.max(votemat_to_t0[2, ]))
+      pred_2[obsId, "backward_simple_b"] <- names(which.max(votemat_to_t1[2, ]))
+      # c) (min(sd))
+      pred_2[obsId, "forward_simple_c"] <- names(which.min(votemat_to_t0[3, ]))
+      pred_2[obsId, "backward_simple_c"] <- names(which.min(votemat_to_t1[3, ]))
+      
+      # d-1) (prod) Let's pick the votes using each log-tolerance:
+      # d-2) (sum)
+      for (lt in logTols) {
+        ltStr <- formatC(lt, format = "e", digits = 0)
+        
+        maxLogProd_fw <- votemat_to_t0[4, which.max(votemat_to_t0[4, ])]
+        maxLogProd_bw <- votemat_to_t1[4, which.max(votemat_to_t1[4, ])]
+        maxLogSum_fw <- votemat_to_t0[5, which.max(votemat_to_t0[5, ])]
+        maxLogSum_bw <- votemat_to_t1[5, which.max(votemat_to_t1[5, ])]
+        
+        equalLogsProd_fw <- which(votemat_to_t0[4, ] >= (maxLogProd_fw - lt))
+        equalLogsProd_bw <- which(votemat_to_t1[4, ] >= (maxLogProd_bw - lt))
+        equalLogsSum_fw <- which(votemat_to_t0[5, ] >= (maxLogSum_fw - lt))
+        equalLogsSum_bw <- which(votemat_to_t1[5, ] >= (maxLogSum_bw - lt))
+        
+        minSdProd_fw <- which.min(votemat_to_t0[3, equalLogsProd_fw])
+        minSdProd_bw <- which.min(votemat_to_t1[3, equalLogsProd_bw])
+        minSdSum_fw <- which.min(votemat_to_t0[3, equalLogsSum_fw])
+        minSdSum_bw <- which.min(votemat_to_t1[3, equalLogsSum_bw])
+        
+        pred_2[obsId, paste0("forward_d_prod_", ltStr)] <- names(minSdProd_fw)
+        pred_2[obsId, paste0("backward_d_prod_", ltStr)] <- names(minSdProd_bw)
+        pred_2[obsId, paste0("forward_d_sum_", ltStr)] <- names(minSdSum_fw)
+        pred_2[obsId, paste0("backward_d_sum_", ltStr)] <- names(minSdSum_bw)
+      }
+    }
+
+    
+    resultsTwo <- list()
+    for (resType in colnames(pred_2)) {
+      isForward <- length(grep("^forward_", resType)) > 0
+      useTruth <- if (isForward) groundTruth_R else groundTruth_L
+      resultsTwo[[resType]] <- confmat2Dataframe(
+        cm = caret::confusionMatrix(
+          data = factor(pred_2[, resType], levels = states),
+          reference = factor(useTruth, levels = states),
+          mode = "everything"))
+    }
+    
+    results$Two <- resultsTwo
+  }
+  
+  # We have covered the first two schemes, now it's time for the main scheme:
+  # Training a customized neural network.
+  set.seed(hp$resampleSeed)
+  
+  lHl <- hp$neurons
+  weights_hidden <- glorot_weights(ncol(data$train_X),lHl)
+  biases_hidden <- glorot_weights(1, lHl)
+  weights_output <- glorot_weights(lHl, 2)
+  biases_output <- glorot_weights(1, ncol(data$train_Y))
+  
+  act.fct <- relu
+  act.fct.derive <- relu_d1
+  if (hp$act.fct == "Lrelu") {
+    act.fct <- lrelu
+    act.fct.derive <- lrelu_d1
+  } else if (hp$act.fct == "swish") {
+    act.fct <- swish
+    act.fct.derive <- swish_d1
+  }
+  
+  err.fct <- RSS
+  err.fct.derive <- RSS_d1
+  if (hp$err.fct == "wRSS") {
+    err.fct <- wRSS
+    err.fct.derive <- wRSS_d1
+  } else if (hp$err.fct == "omeRSS") {
+    err.fct <- omeRSS
+    err.fct.derive <- omeRSS_d1
+  } else if (hp$err.fct == "ome2RSS") {
+    err.fct <- ome2RSS
+    err.fct.derive <- ome2RSS_d1
+  }
+  
+  m1Fit <- gradient_descent_m1(
+    X = as.matrix(data$train_X), Y = as.matrix(data$train_Y),
+    w_h_0 = weights_hidden, b_h_0 = biases_hidden,
+    w_o_0 = weights_output, b_o_0 = biases_output,
+    #epochs = 3e4, learning_rate = hp$learningRate, ################################################################
+    epochs = 1e1, learning_rate = hp$learningRate,
+    precision = 1e-5, batch_size = hp$batchSize,
+    act.fn = act.fct, act.fn.derive = act.fct.derive,
+    err.fn = err.fct, err.fn.derive = err.fct.derive
+  )
+  
+  
+  # Again, we have 3 simple a/b/c schemes (pick max prod/sum; min sd) and
+  # then we have the minimum sd according to the log-tolerance, both for
+  # products and sums.
+  pred_3 <- matrix(ncol = 3 + 2 * length(logTols), nrow = length(unqObsIds))
+  colnames(pred_3) <- c(paste0("simple_", c("a", "b", "c")),
+                        paste0("d_prod_", formatC(logTols, format = "e", digits = 0)),
+                        paste0("d_sum_", formatC(logTols, format = "e", digits = 0)))
+  rownames(pred_3) <- unqObsIds
+  
+  for (obsId in unqObsIds) {
+    
+    # Rows is estimators, cols are pred_t0, pred_t1, prod, sum, sd, log10(prod), log10(sum)
+    votemat <- matrix(nrow = length(states)**2, ncol = 7)
+    rownames(votemat) <- statesCombined
+    
+    validSample <- data$valid_X[data$valid_Y_obsId == obsId, ]
+    
+    for (state_i in states) {
+      for (state_j in states) {
+        # Now for each estimator, we inference the sample and produce estimates
+        # for state t-1 and t0.
+        est_t1 <- which(states == state_i)
+        est_t0 <- which(states == state_j)
+        
+        # Returns a matrix with one row:
+        predRaw <- m1(x_i = as.matrix(validSample[validSample$est_t1 == est_t1 & validSample$est_t0 == est_t0, ]),
+                      w_h = m1Fit$w_h, b_h = m1Fit$b_h, w_o = m1Fit$w_o, b_o = m1Fit$b_o,
+                      act.fn = act.fct, act.fn.derive = act.fct.derive)
+        
+        # Note the order here; j corresponds to t0, and i to t-1.
+        # This is how it was passed to the network as Y.
+        estimatorName <- paste0(state_i, state_j)
+        votemat[estimatorName, 1:2] <- predRaw[1, ]
+        votemat[estimatorName, 3:5] <- c(prod(predRaw[1, ]), sum(predRaw[1, ]), sd(predRaw[1, ]))
+        votemat[estimatorName, 6:7] <- log10(votemat[estimatorName, 3:4])
+      }
+    }
+    
+    pred_3[obsId, "simple_a"] <- names(which.max(votemat[, 3]))
+    pred_3[obsId, "simple_b"] <- names(which.max(votemat[, 4]))
+    pred_3[obsId, "simple_c"] <- names(which.min(votemat[, 5]))
+    
+    for (lt in logTols) {
+      ltStr <- formatC(lt, format = "e", digits = 0)
+      
+      maxLogProd <- votemat[which.max(votemat[, 6]), 6]
+      maxLogSum <- votemat[which.max(votemat[, 7]), 7]
+      
+      equalLogsProd <- which(votemat[, 6] >= (maxLogProd - lt))
+      equalLogsSum <- which(votemat[, 7] >= (maxLogSum - lt))
+      
+      minSdProd <- which.min(votemat[equalLogsProd, 5])
+      minSdSum <- which.min(votemat[equalLogsSum, 5])
+      
+      pred_3[obsId, paste0("d_prod_", ltStr)] <- names(minSdProd)
+      pred_3[obsId, paste0("d_sum_", ltStr)] <- names(minSdSum)
+    }
+  }
+  
+  resultsThree <- list()
+  for (resType in colnames(pred_3)) {
+    resultsThree[[resType]] <- firstOrderPredToFlatConfmats(
+      groundTruth = groundTruth, pred = pred_3[, resType], states = states)
+  }
+  
+  results$Three <- resultsThree
+  
+  return(results)
 }
 
 

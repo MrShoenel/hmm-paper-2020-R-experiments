@@ -117,7 +117,9 @@ train$obsId <- NULL
 #train <- balanceDatasetSmote(train, "y")
 #train$y <- NULL
 
-train_Y <- as.matrix(train[, grepAnyOrAll("^y_t", colnames(train))])
+# It is utmost important that we order these columns!
+# The lower the index, the earlier a predictor has to appear!
+train_Y <- as.matrix(train[, sort(colnames(train)[grepAnyOrAll("^y_t", colnames(train))])])
 train_est <- train[, colnames(train) %in% c("est_t0", "est_t1")]
 nzv <- caret::nzv(train, names = TRUE, saveMetrics = TRUE)
 train <- train[, !(nzv$zeroVar | nzv$nzv)]

@@ -1,8 +1,17 @@
 relu <- function(x) {
-  return(max(0.1 * x, x))
+  return(max(0, x))
 }
 
 relu_d1 <- function(x) {
+  if (x <= 0) return(0)
+  return(1)
+}
+
+lrelu <- function(x) {
+  return(max(0.1 * x, x))
+}
+
+lrelu_d1 <- function(x) {
   if (x <= 0) return(0.1)
   return(1)
 }
@@ -61,7 +70,7 @@ m1 <- function(x_i, w_h, b_h, w_o, b_o, act.fn = relu, act.fn.derive = relu_d1) 
     O[1, i] <- sigmoid(w %*% H[1, ] + b_o[i])
   }
   
-  return(O[1, ])
+  return(matrix(data = O[1, ], ncol = num_output))
 }
 
 
