@@ -30,8 +30,8 @@ Let's train the network!
 xor_weights <- gradient_descent_m1(
   X=XY_xor[,1:2], Y=matrix(data = XY_xor[,3], nrow = 4),
   w_h_0 = wh_xor, b_h_0 = bh_xor, w_o_0 = wo_xor, b_o_0 = bo_xor,
-  epochs = 1e4, learning_rate = 1e-1, precision = 1e-5,
-  act.fn = relu, act.fn.derive = relu_d1,
+  epochs = 1e5, learning_rate = 1e-1, precision = 5e-6, patience = 10,
+  act.fn = lrelu, act.fn.derive = lrelu_d1,
   err.fn = RSS, err.fn.derive = RSS_d1)
 ```
 
@@ -92,7 +92,7 @@ z <- outer(x, y, function(x1,x2) {
 persp(x, y, z,
       main="Perspective Plot of XOR",
       zlab = "m1 output",
-      theta = 235, phi = 25,
+      theta = 235, phi = 205,
       col = "springgreen", shade = 0.33)
 ```
 
@@ -147,9 +147,10 @@ bo_c <- glorot_weights(1,2)
 c_weights <- gradient_descent_m1(
   X = train_X, Y = train_Y,
   w_h_0 = wh_c, b_h_0 = bh_c, w_o_0 = wo_c, b_o_0 = bo_c,
-  epochs = 1e4, learning_rate = 1e-3,
+  epochs = 1e2, learning_rate = 1e-3,
   precision = 1e-5, batch_size = 32,
-  act.fn = swish, act.fn.derive = swish_d1)#,
+  act.fn = swish, act.fn.derive = swish_d1,
+  err.fn = ome2RSS, err.fn.derive = ome2RSS_d1)#,
   #valid_X = valid_X, valid_Y = valid_Y)
 ```
 

@@ -500,7 +500,8 @@ generateDataForHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) 
   train_Y_obsId <- train$obsId
   train$obsId <- NULL
   
-  yCols <- if (useOnlyData) c(stateColumn_t_1, stateColumn) else c("y_t0", "y_t1")
+  yCols <- if (useOnlyData) c(stateColumn, stateColumn_t_1) else c("y_t0", "y_t1")
+  yColsInt <- !useOnlyData # y_t1, y_t0 are integers
   
   # Sometimes we need to oversample the training data to account
   # for the non-even distribution of class labels.
@@ -511,8 +512,14 @@ generateDataForHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) 
     train$y__ <- paste0(train[[yCols[1]]], "__|__", train[[yCols[2]]])
     
     train <- balanceDatasetSmote(train, "y__")
-    train[[yCols[1]]] <- sapply(train$y__, function(l) as.integer(strsplit(l, "__|__")[[1]][1]))
-    train[[yCols[2]]] <- sapply(train$y__, function(l) as.integer(strsplit(l, "__|__")[[1]][3]))
+    train[[yCols[1]]] <- sapply(train$y__, function(l) {
+      temp <- strsplit(l, "__|__")[[1]][1]
+      return(if (yColsInt) as.integer(temp) else temp)
+    })
+    train[[yCols[2]]] <- sapply(train$y__, function(l) {
+      temp <- strsplit(l, "__|__")[[1]][3]
+      return(if (yColsInt) as.integer(temp) else temp)
+    })
     train$y__ <- NULL
     
     if (!useOnlyData) {
@@ -646,8 +653,11 @@ evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
     One = NULL,
     Two = NULL,
     Three = NULL,
-    Four = NULL
+    Four = NULL,
+    # Include some metadata before we return:
+    meta = list()
   )
+
   
   
   # Let's do the voting, scheme by scheme
@@ -840,6 +850,13 @@ evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
     results$Two <- resultsTwo
   }
   
+  
+  
+  
+  #########################################################################
+  ############  Scheme Three
+  #########################################################################
+  
   # We have covered the first two schemes, now it's time for the main scheme:
   # Training a customized neural network.
   set.seed(hp$resampleSeed)
@@ -952,10 +969,132 @@ evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
   
   results$Three <- resultsThree
   
+  
+  
+  #########################################################################
+  ############  Scheme Four
+  #########################################################################
+  
+  # Scheme 4 is conditional on the data NOT be oversampled. That is
+  # because we flatten an observation and thus require a fixed length.
+  # Scheme 4 reuses the model we fit in scheme 3, and roughly does this:
+  # - Pass the training data through the network (not the validation data)
+  #   to obtain the network's activations
+  # - Flatten each of the activation's for both states and create a true
+  #   one-hot encoding of which estimators were picked correctly.
+  if (!hp$oversample) {
+    unqTrainIds <- sort(unique(data$train_Y_obsId))
+
+    train_X_four <- matrix(nrow = length(unqTrainIds), ncol = 2 + 2*length(states)**2)
+    train_Y_four <- matrix(nrow = length(unqTrainIds), ncol = length(states)**2)
+    rownames(train_X_four) <- unqTrainIds
+    
+    valid_X_four <- matrix(nrow = length(unqObsIds), ncol = 2 + 2*length(states)**2)
+    valid_Y_four <- matrix(nrow = length(unqObsIds), ncol = length(states)**2)
+    rownames(valid_X_four) <- unqObsIds
+    
+    # Attention: We take the training IDs:
+    for (obsId in unqTrainIds) {
+      trainSample_X <- as.matrix(data$train_X[data$train_Y_obsId == obsId, ])
+      trainSample_Y <- as.matrix(data$train_Y[data$train_Y_obsId == obsId, ])
+      idx11 <- which(trainSample_Y[, "y_t1"] == 1 & trainSample_Y[, "y_t0"] == 1)
+      vec11 <- rep(0, length(states)**2)
+      vec11[idx11] <- 1
+      
+      # Let's predict all of the densitiy-versions:
+      predRaw <- matrix(nrow = nrow(trainSample_X), ncol = ncol(trainSample_Y))
+      for (i in 1:nrow(trainSample_X)) {
+        predRaw[i, ] <- m1(
+          x_i = as.matrix(trainSample_X[i, ]),
+          w_h = m1Fit$w_h, b_h = m1Fit$b_h, w_o = m1Fit$w_o, b_o = m1Fit$b_o,
+          act.fn = act.fct, act.fn.derive = act.fct.derive)
+      }
+      
+      train_X_four[obsId, ] <- c(predRaw[, 1], sd(predRaw[, 1]), predRaw[, 2], sd(predRaw[, 2]))
+      train_Y_four[obsId, ] <- vec11
+    }
+    
+    # Let's do the same for the validation data:
+    for (obsId in unqObsIds) {
+      validSample_X <- as.matrix(data$valid_X[data$valid_Y_obsId == obsId, ])
+      validSample_Y <- as.matrix(data$valid_Y[data$valid_Y_obsId == obsId, ])
+      idx11 <- which(validSample_Y[, "y_t1"] == 1 & validSample_Y[, "y_t0"] == 1)
+      vec11 <- rep(0, length(states)**2)
+      vec11[idx11] <- 1
+      
+      predRaw <- matrix(nrow = nrow(validSample_Y), ncol = ncol(validSample_Y))
+      for (i in 1:nrow(validSample_X)) {
+        predRaw[i, ] <- m1(
+          x_i = as.matrix(validSample_X[i, ]),
+          w_h = m1Fit$w_h, b_h = m1Fit$b_h, w_o = m1Fit$w_o, b_o = m1Fit$b_o,
+          act.fn = act.fct, act.fn.derive = act.fct.derive)
+      }
+      
+      valid_X_four[obsId, ] <- c(predRaw[, 1], sd(predRaw[, 1]), predRaw[, 2], sd(predRaw[, 2]))
+      valid_Y_four[obsId, ] <- vec11
+    }
+    
+    # Don't forget to scale the data:
+    train_X_four <- as.data.frame(train_X_four)
+    valid_X_four <- as.data.frame(valid_X_four)
+    
+    scaler_X <- caret::preProcess(train_X_four, method = c("center", "scale"))
+    train_X_four <- as.matrix(predict(scaler_X, newdata = train_X_four))
+    valid_X_four <- as.matrix(predict(scaler_X, newdata = valid_X_four))
+    
+    last.warning <- NULL
+    # Now we can train the 2nd-stage network and make predictions.
+    set.seed(hp$resampleSeed)
+    nnet <- neuralnet::neuralnet(
+      formula = formula(paste0(paste(paste0("V", (ncol(train_X_four) + 1):(ncol(train_X_four) + ncol(train_Y_four))), collapse = " + "), "~.")),
+      data = as.data.frame(cbind(train_X_four, train_Y_four)), # so we get col-names
+      hidden = 6,
+      stepmax = 15e4,
+      startweights = glorot_weights(numIn = length(states)**2 + 2, numOut = 8),
+      lifesign = "none")
+    
+    if (length(grep("did not converge", names(last.warning))) == 0) {
+      # There is no strategy other than picking the maximum activation out
+      # of the true one-hot vector.
+      pred_4 <- matrix(nrow = length(unqObsIds), ncol = 1)
+      rownames(pred_4) <- unqObsIds
+      
+      for (obsId in unqObsIds) {
+        validSample_X <- as.matrix(data$valid_X[data$valid_Y_obsId == obsId, ])
+        
+        predOneHotIdx <- which.max(predict(nnet, newdata = t(as.data.frame(valid_X_four[obsId, ]))))
+        
+        estimatorPred <- paste0(
+          states[validSample_X[predOneHotIdx, "est_t1"]], states[validSample_X[predOneHotIdx, "est_t0"]])
+        
+        pred_4[obsId, ] <- estimatorPred
+      }
+      
+      results$Four <- firstOrderPredToFlatConfmats(
+        groundTruth = groundTruth, pred = pred_4[, 1], states = states)
+    } else {
+      results$Four <- "Error: did not converge"
+    }
+  }
+  
   return(results)
 }
 
 
+writeOrAppend.csv <- (function() {
+  padLockFile <- tempfile()
+
+  return(function(csvFile, data) {
+    existed <- file.exists(csvFile)
+    if (!existed) {
+      file.create(csvFile)
+    }
+    
+    padLock <- filelock::lock(padLockFile, exclusive = TRUE, timeout = Inf)
+    suppressWarnings(write.table(x = data, file = csvFile, append = TRUE, sep = ";", row.names = FALSE, col.names = !existed))
+    filelock::unlock(padLock)
+  })
+})()
 
 
 

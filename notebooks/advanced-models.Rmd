@@ -761,3 +761,86 @@ In our case, we get 3 models each leading to each type of commit (e.g., there ar
 * Take the maximum or average/sum from each group of models.
 * Same, but take max/avg from each individual model
 * ...
+
+
+### Check voting-mechanism of $e_{i,j}$-models
+
+Currently, for the $\boldsymbol e_{\boldsymbol i,j}$-likelihood estimators, we add together the sums of likelihoods for all estimators that end in state $j$, and then we take the max as prediction. However, it may be advisable to take the sole maximum across all individual estimators instead. The voting-scheme for other models should also be checked.
+
+
+### Add properties of previous observations
+
+As an example, we can extend our $\boldsymbol e_{\boldsymbol i,j}$-likelihood estimators to also include densities over the observed properties of the preceding observation. This could lead to a greater spread in higher and lower likelihoods and be a tie-breaker. In other words, if selecting the correct predecessor too, then this may result in higher likelihoods if the $j$-th observation is chosen correctly. Note that this would require a change in the voting-scheme, because now we would need to select the estimator with highest maximum likelihood (i.e., no grouping).
+
+
+### Re-run tests with normalized PDFs
+
+It might be that using unnormalized PDFs across estimators as we have done it so far is not correct, as different estimators use different (and a different amount of) underlying observations, leading to inhomogeneous domains. We should probably re-run all models using `normalizePdf=TRUE`.
+
+
+### Adding trainable parameters to Joint Conditional Density models
+
+The JCD models currently add up the relative likelihoods for each feature's value, and there is no weighting. However, instead of adding trainable parameters to these models, we suggest using a neural network as 2nd stage like this:
+
+* Normalize the output into the range $[0,1]$ of each estimated density function. This can be easily done by dividing the result by $y_{max}$, which is part of the estimated function. The probability masses for discrete features are already in this range.
+* Use these transformed values as input for a neural network, which itself uses the _Swish_-activation function, and _one-hot_-encoding or just a binary output (see below).
+* Note that we may have to train a network per estimator or groups of estimators (see below). Then, the votes may be combined or simply the maximum is taken.
+
+The way a neural network may be operationalized depends on the type of JCD. In the case of our 1st-order $\boldsymbol C$-models (which use the $\boldsymbol e_{\boldsymbol i,j}$-likelihood estimators), we have already number of labels squared estimators. Also, as input-observation, there is no information about the preceding observation. This means that we probably need to aggregate all $\boldsymbol i$-estimators, as we only have information about $j$ (being the current observation). It may also be worth testing to use ___all___ estimators and have a one-hot output encoding.
+
+```{r}
+set.seed(847321)
+p <- caret::createDataPartition(commits_t1[["label_t_0"]], p = 0.8, list = FALSE)
+tempData <- commits_t1[, !grepAnyOrAll(
+  c(ignoreCols, "t_1$"), colnames(commits_t1))]
+train <- tempData[p, ]
+valid <- tempData[-p, ]
+
+pred <- condDens_C_1stOrder_weighted(
+  states = states, data = train, observations = valid, stateColumn = "label_t_0")
+```
+
+```{r}
+temp <- pred[pred[,1]==1,]
+bla <- c()
+for (i in 0:((nrow(temp)/3))-1) {
+  tempMat <- temp[(i*3+1):(i*3+3), states]
+  bla <- c(bla, states[which(tempMat == max(tempMat), arr.ind = TRUE)[1, "row"]])
+}
+bla <- factor(x=bla[2:length(bla)], levels = states)
+
+caret::confusionMatrix(bla, valid$label_t_0)
+```
+
+
+### Improve previous test-case
+
+The results of the previous approach are terrible. However, we have many degrees of freedom and many ways this could have gone wrong.
+
+I do suggest the following two steps:
+
+1. Extend $e_{i,j}$-models to include the densities of the previous observation(s) (but not their label). This is more closely described in _Add properties of previous observations_.
+  * Then just re-test these models, as I would definitely expect an improvement of the results.
+2. Add neural networks to these models.
+  * The previous extension is crucial, because it significantly changes the voting-scheme and avoids grouping of estimators as done previously.
+  * Now, each estimator gets its own separate 2nd stage.
+
+More details for "neural afterburner":
+
+* The following assumptions are for 1st-order models based on the $e_{i,j}$-estimators but can easily extended to the 2nd- or nth-order. Our earlier work has shown that taking 3, 5 or more previous observations is actually of value sometimes.
+* Each partial estimator should get a one-hot encoding. For three labels and 1st-order estimators, this will result in 6 output-neurons; 2nd-order would be 9 already.
+* Each observation passed through each pipeline, that is, transforming it to likelihoods using the current $e_{i,j}$-model's densities, then passing that result through the associated neural network to get the activations.
+* The training for each estimator's neural network would use all the training data, labelled accordingly. Example: The estimator for the sequence $a,a$ would activate as $1,0,0,1,0,0$ for such an $a,a$-observation. An estimator $c,a$ would activate as $0,0,0,1,0,0$, because the observation itself would be correct, but not its predecessor. So the estimator for $p,c$ would activate with zeros only.
+
+__NOTE__: The above is not entirely correct, and there is an extensive audio-recording explaining the process.
+
+
+
+
+
+
+
+
+
+
+

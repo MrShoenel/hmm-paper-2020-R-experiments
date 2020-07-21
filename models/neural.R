@@ -40,6 +40,12 @@ glorot_weights <- function(numIn, numOut) {
   return(runif(n, min = -l, max = l))
 }
 
+modp <- function(x, m) {
+  temp <- x %% m
+  if (temp == 0) return(m)
+  return(temp)
+}
+
 
 m1 <- function(x_i, w_h, b_h, w_o, b_o, act.fn = relu, act.fn.derive = relu_d1) {
   num_inputs <- length(x_i)
@@ -129,12 +135,6 @@ compute_grad_wRSS_m1 <- function(X, Y, w_h, b_h, w_o, b_o, act.fn = relu, act.fn
   grad_b_o <- rep(0, l_b_o)
   grad_w_h <- rep(0, l_w_h)
   grad_b_h <- rep(0, l_b_h)
-  
-  modp <- function(x, m) {
-    temp <- x %% m
-    if (temp == 0) return(m)
-    return(temp)
-  }
   
   for (i in 1:N) {
     # In each gradient, we need to compute the hidden layer
@@ -252,7 +252,7 @@ compute_grad_wRSS_m1 <- function(X, Y, w_h, b_h, w_o, b_o, act.fn = relu, act.fn
 
 
 
-gradient_descent_m1 <- function(X, Y, w_h_0, b_h_0, w_o_0, b_o_0, epochs = 1e2, learning_rate = 1e-3, precision = 1e-4, batch_size = -1, act.fn = relu, act.fn.derive = relu_d1, err.fn = wRSS, err.fn.derive = wRSS_d1, valid_X = NULL, valid_Y = NULL) {
+gradient_descent_m1 <- function(X, Y, w_h_0, b_h_0, w_o_0, b_o_0, epochs = 1e2, learning_rate = 1e-3, precision = 1e-4, patience = 5, batch_size = -1, act.fn = relu, act.fn.derive = relu_d1, err.fn = wRSS, err.fn.derive = wRSS_d1, valid_X = NULL, valid_Y = NULL) {
   hist_loss <- c(loss_wRSS_m1(X=X, Y=Y, w_h = w_h_0, b_h = b_h_0, w_o = w_o_0, b_o = b_o_0, act.fn = act.fn, act.fn.derive = act.fn.derive, err.fn = err.fn))
   
   w_o <- w_o_0
@@ -262,6 +262,8 @@ gradient_descent_m1 <- function(X, Y, w_h_0, b_h_0, w_o_0, b_o_0, epochs = 1e2, 
   
   use_X <- X
   use_Y <- Y
+  
+  patMat <- matrix(nrow = 1, ncol = patience, data = rep(precision * 2, patience))
   
   for (i in 1:epochs) {
     if (batch_size > 0) {
@@ -295,7 +297,11 @@ gradient_descent_m1 <- function(X, Y, w_h_0, b_h_0, w_o_0, b_o_0, epochs = 1e2, 
         act.fn = act.fn, act.fn.derive = act.fn.derive,
         err.fn = err.fn))
     
-    if (all(c(step_w_o, step_b_o, step_w_h, step_b_h) < precision)) {
+    # Add the current largest step to the patience-matrix. Only if all
+    # of the last n steps are < precision, we can stop.
+    patMat[1, modp(i, patience)] <- max(c(step_w_o, step_b_o, step_w_h, step_b_h))
+    
+    if (all(patMat < precision)) {
       print("Stopping early, as the improvement is less than the threshold.")
       break
     }
