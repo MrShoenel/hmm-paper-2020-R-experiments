@@ -20,7 +20,7 @@ source("../models/rssOrdered.R", echo = FALSE)
 ```{r echo=FALSE, warning=FALSE, message=FALSE}
 olReqPkgs <- c(
   "pracma", "e1071", "neuralnet", "parallel", "doParallel", "doSNOW",
-  "ranger", "knitr", "devtools", "caret", "mlbench", "DMwR")
+  "ranger", "knitr", "devtools", "caret", "mlbench", "DMwR", "filelock")
 install.packagesCond(olReqPkgs)
 for (pkg in olReqPkgs) { library.silent(pkg) }
 
