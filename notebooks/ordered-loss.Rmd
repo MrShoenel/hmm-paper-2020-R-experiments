@@ -59,11 +59,11 @@ set.seed(0xc0de)
 olHp <- expand.grid(
   # This is for the cross validation. All pseudo-random functionality
   # should use this.
-  resampleSeed = c(23),#as.integer(runif(5, max = 2**31)),
-  dens.fct = c("epdf"),#c("ecdf", "1-ecdf", "epdf", "epdf_scaled"),
+  resampleSeed = as.integer(runif(5, max = 2**31)),
+  dens.fct = c("ecdf", "1-ecdf", "epdf", "epdf_scaled"),
   # Whether to oversample the unbalanced data before training.
   oversample = c(TRUE, FALSE),
-  useKeywords = c(FALSE),#c(TRUE, FALSE),
+  useKeywords = c(TRUE, FALSE),
   # data is always scaled, but scaling for density(data) is conditional.
   # If keywords are included, they're added to data before any other steps,
   # hence if data is scaled, so are the keywords.
@@ -73,17 +73,19 @@ olHp <- expand.grid(
   # How to compute the densities for each continuous random variable.
   # Since PDFs are not necessary in the codomain [0,1], we have an extra
   # option to use scaled PDFs.
-  batchSize = c(16),#c(8, 16, 32, 64),
+  batchSize = c(8, 16, 32, 64),
   # There is only one hidden layer.
-  neurons = c(5),#c(5, 10, 17, 30, 50),
-  learningRate = c(0.05),#c(0.05, 0.005, 0.0005),
-  err.fct = c("ome2RSS"),#c("RSS", "wRSS", "omeRSS", "ome2RSS"),
-  act.fct = c("gelu"),#c("Lrelu", "swish", "gelu"),
-  epochs = c(1e1) ################# CHANGE
+  neurons = c(5, 10, 17, 30, 50),
+  learningRate = c(0.05, 0.005, 0.0005),
+  err.fct = c("RSS", "wRSS", "omeRSS", "ome2RSS"),
+  act.fct = c("Lrelu", "swish", "gelu"),
+  epochs = c(2e4)
 )
 
 # Attach an ID to each hyperparameter set:
 olHp$ID <- 1:nrow(olHp)
+
+write.csv(olHp, file = "../results/ordered-loss_hyperparams.csv")
 ```
 
 Attach an ID to each set of hyperparameters - we need that because we will also add a filter at runtime as we're using many instances to compute this.
