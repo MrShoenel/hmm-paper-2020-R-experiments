@@ -1,6 +1,9 @@
-install.packagesCond <- function(pkg) {
-  if (pkg %in% rownames(installed.packages()) == FALSE) {
-    install.packages(pkg, repos = "http://cran.us.r-project.org")
+install.packagesCond <- function(pkgs) {
+  inst <- rownames(installed.packages())
+  for (pkg in c(pkgs)) {
+    if (!(pkg %in% inst)) {
+      install.packages(pkg, repos = "http://cran.us.r-project.org")
+    }
   }
 }
 
@@ -322,9 +325,9 @@ evaluateStatelessModel <- function(
 }
 
 
-doWithParallelCluster <- function(expr, errorValue = NULL) {
-  cl <- parallel::makePSOCKcluster(parallel::detectCores())
-  doParallel::registerDoParallel(cl)
+doWithParallelCluster <- function(expr, errorValue = NULL, numCores = parallel::detectCores()) {
+  cl <- parallel::makePSOCKcluster(numCores)
+  doSNOW::registerDoSNOW(cl)
   
   result <- tryCatch(expr, error=function(cond) {
     if (!is.null(errorValue)) {
@@ -630,24 +633,60 @@ generateDataForHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) 
 #' If everything worked, the result contains a flattened confusion
 #' matrix. If not applicable, the entry will be NULL.
 evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
+  if (!(hp$useDatatype %in% c("density", "density_scaled", "both", "both_scaled"))) {
+    stop(paste0(hp$useDatatype, " not supported - need density."))
+  }
+  
   data <- generateDataForHpOrderedLoss(
     hp = hp, data = data, dataKw = dataKw,
     states = states, stateColumn = stateColumn)
   
-  useDens <- hp$useDatatype %in% c("density", "both", "density_scaled", "both_scaled")
   isOversampled <- hp$oversample
-  
-  # Let's first produce the ground-truth from our 2-times one-hot encoding:
   unqObsIds <- sort(unique(data$valid_Y_obsId))
-  validJoined <- data.frame(cbind(data$valid_X$est_t1, data$valid_X$est_t0, data$valid_Y, data$valid_Y_obsId))
-  colnames(validJoined) <- c("est_t1", "est_t0", "y_t1", "y_t0", "obsId")
+  
+  # In this case, we cannot use schemes one and two, as they require
+  # the density data to be strictly positive.
+  isDensScaled <- hp$useDatatype %in% c("density_scaled", "both_scaled")
+  
+  # For the following predictive scenarios and voting schemes it is
+  # important to understand what we are interested in and what data
+  # we have. If we use the density of the observations in any way,
+  # then we always try to predict the correct sequence of density
+  # estimators, which results in attempting to predict an n-times one-
+  # hot encoding of correctly chosen estimators (where n is the order
+  # of the model). Each sample exists n^2 times and the overall goal
+  # in this scenario is to find the best-matching succession of density
+  # estimators for each sample.
+  
+  # Columns end in t_1, t_0 where t_0 is the most important and must
+  # come first. Using sort() ensures this.
+  yCols <- sort(colnames(data$valid_Y))
+  validJoined <- data.frame(cbind(
+    data$valid_Y, data$valid_X$est_t1, data$valid_X$est_t0, data$valid_Y_obsId))
+  colnames(validJoined) <- c(yCols, "est_t1", "est_t0", "obsId")
+  
+  # This is the ground-truth for our 2-times one-hot encoding; out of all density-
+  # activations it determines which was the correct one. Every observation has an
+  # ID and there are n^2 activations per ID. Select the estimators where both both,
+  # y_t1 and y_t0 are correct.
   groundTruth <- sapply(unqObsIds, function(oId) {
     temp <- validJoined[validJoined$obsId == oId & validJoined$y_t1 == 1 & validJoined$y_t0 == 1, ]
+    if (nrow(temp) > 1) stop("This must not happen.")
     paste0(states[temp$est_t1], states[temp$est_t0])
   })
+  
   # Left is t-1, right is t0
   groundTruth_L <- sapply(groundTruth, function(gt) stringi::stri_sub(gt, from = 1, to = 1))
   groundTruth_R <- sapply(groundTruth, function(gt) stringi::stri_sub(gt, from = 2, to = 2))
+  
+  # Some schemes produce a result for each of these:
+  logTols <- c(1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8)
+  
+  # Creates 'aa', 'ac', .., 'pp'
+  statesCombined <- apply(expand.grid(
+    a = states,
+    b = states
+  ), 1, function(r) paste0(r[1], r[2]))
   
   results <- list(
     One = NULL,
@@ -660,22 +699,20 @@ evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
 
   
   
-  # Let's do the voting, scheme by scheme
-  if (useDens) {
+  # Let's do the voting, scheme by scheme:
+  
+  #########################################################################
+  ############  Scheme One
+  #########################################################################
+  
+  if (!isDensScaled) {
+    
     # We can do the schemes 'One' and 'Two', they require density. For scheme
     # One, we produce a matrix where each column corresponds to one specific
     # estimator. The estimator the data was generated with is stored in the
     # data in the columns 'est_t1', 'est_t0' as integers and refers to the
     # index in the 'states'-vector. A fully-qualified estimator thus is the
     # concat of both states.
-    
-    logTols <- c(1e-1, 1e-2, 1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8)
-    
-    # Creates 'aa', 'ac', .., 'pp'
-    statesCombined <- apply(expand.grid(
-      a = states,
-      b = states
-    ), 1, function(r) paste0(r[1], r[2]))
     
     # Techniques a/b/c are the first three columns, and the next 2*n columns
     # are technique d with a different logTol every time (prod/sum). The rows
@@ -696,9 +733,10 @@ evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
       for (state_i in states) {
         for (state_j in states) {
           estimatorName <- paste0(state_i, state_j)
-          estimatorData <- validSample[validSample$est_t1 == which(states == state_i) & validSample$est_t0 == which(states == state_j), !grepAnyOrAll("^est_t", colnames(validSample))]
+          estimatorData <- validSample[validSample$est_t1 == which(states == state_i) & validSample$est_t0 == which(states == state_j), grepAnyOrAll("^d_", colnames(validSample))]
+          estimatorData <- estimatorData
           
-          votemat[1, estimatorName] <- prod(estimatorData + 0.1)
+          votemat[1, estimatorName] <- prod(estimatorData + 1/3)
           votemat[2, estimatorName] <- sum(estimatorData)
           votemat[3, estimatorName] <- sd(estimatorData)
           # log10's of prod and sum
@@ -741,12 +779,15 @@ evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
     }
     
     results$One <- resultsOne
+  }
 
-        
-    #########################################################################
-    ############  Scheme Two
-    #########################################################################
-    
+  
+      
+  #########################################################################
+  ############  Scheme Two
+  #########################################################################
+  
+  if (!isDensScaled) {
     # For scheme Two, we combine the estimators by grouping them. Each group
     # represents all estimators that end in a state t_0 (group estimators
     # with same state for t_0). Also, make a votematrix grouping the estimators
@@ -765,7 +806,7 @@ evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
     colnames(pred_2) <- c(
       paste0("forward_", cn_pred_2),
       paste0("backward_", cn_pred_2))
-
+  
     rownames(pred_2) <- unqObsIds
     
     for (obsId in unqObsIds) {
@@ -780,8 +821,8 @@ evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
       colnames(votemat_to_t1) <- states
       
       for (state in states) {
-        estimatorData_to_t0 <- validSample[validSample$est_t0 == which(states == state), !grepAnyOrAll("^est_t", colnames(validSample))]
-        estimatorData_to_t1 <- validSample[validSample$est_t1 == which(states == state), !grepAnyOrAll("^est_t", colnames(validSample))]
+        estimatorData_to_t0 <- validSample[validSample$est_t0 == which(states == state), grepAnyOrAll("^d_", colnames(validSample))]
+        estimatorData_to_t1 <- validSample[validSample$est_t1 == which(states == state), grepAnyOrAll("^d_", colnames(validSample))]
         
         votemat_to_t0[1, state] <- prod(apply(estimatorData_to_t0, 1, sum))
         votemat_to_t0[2, state] <- sum(estimatorData_to_t0)
@@ -834,7 +875,7 @@ evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
         pred_2[obsId, paste0("backward_d_sum_", ltStr)] <- names(minSdSum_bw)
       }
     }
-
+  
     
     resultsTwo <- list()
     for (resType in colnames(pred_2)) {
@@ -849,16 +890,16 @@ evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
     
     results$Two <- resultsTwo
   }
-  
-  
-  
+
+    
   
   #########################################################################
   ############  Scheme Three
   #########################################################################
   
   # We have covered the first two schemes, now it's time for the main scheme:
-  # Training a customized neural network.
+  # Training a customized neural network. This network supports any kind of
+  # data, and will even train with scaled density.
   set.seed(hp$resampleSeed)
   
   lHl <- hp$neurons
@@ -867,7 +908,7 @@ evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
   weights_output <- glorot_weights(lHl, 2)
   biases_output <- glorot_weights(1, ncol(data$train_Y))
   
-  act.fct <- relu
+  
   act.fct.derive <- relu_d1
   if (hp$act.fct == "Lrelu") {
     act.fct <- lrelu
@@ -875,9 +916,17 @@ evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
   } else if (hp$act.fct == "swish") {
     act.fct <- swish
     act.fct.derive <- swish_d1
+  } else if (hp$act.fct == "gelu") {
+    act.fct <- gelu
+    act.fct.derive <- gelu_d1
+  } else if (hp$act.fct == "relu") {
+    act.fct <- relu
+    act.fct.derive <- relu_d1
+  } else {
+    stop(hp$act.fct)
   }
   
-  err.fct <- RSS
+  
   err.fct.derive <- RSS_d1
   if (hp$err.fct == "wRSS") {
     err.fct <- wRSS
@@ -888,19 +937,34 @@ evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
   } else if (hp$err.fct == "ome2RSS") {
     err.fct <- ome2RSS
     err.fct.derive <- ome2RSS_d1
+  } else if (hp$err.fct == "RSS") {
+    err.fct <- RSS
+    err.fct.derive <- RSS_d1
+  } else {
+    stop(hp$err.fct)
   }
   
+  start_three <- as.numeric(Sys.time())
   m1Fit <- gradient_descent_m1(
     X = as.matrix(data$train_X), Y = as.matrix(data$train_Y),
     w_h_0 = weights_hidden, b_h_0 = biases_hidden,
     w_o_0 = weights_output, b_o_0 = biases_output,
-    #epochs = 3e4, learning_rate = hp$learningRate, ################################################################
-    epochs = 1e1, learning_rate = hp$learningRate,
-    precision = 1e-5, batch_size = hp$batchSize,
+    epochs = hp$epochs, learning_rate = hp$learningRate,
+    precision = 1e-3, batch_size = hp$batchSize,
     act.fn = act.fct, act.fn.derive = act.fct.derive,
     err.fn = err.fct, err.fn.derive = err.fct.derive
   )
+  duration_three <- as.numeric(Sys.time()) - start_three
   
+  # Store some meta for the result obtained:
+  tempLm <- lm(
+    formula = y~x,
+    data = data.frame(x = 1:length(m1Fit$hist_loss), y = m1Fit$hist_loss))
+  results$meta$hist_length <- length(m1Fit$hist_loss) - 1
+  results$meta$epochs_used_perc <- (length(m1Fit$hist_loss) - 1) / hp$epochs
+  results$meta$hist_intercept <- tempLm$coefficients[[1]]
+  results$meta$hist_slope <- tempLm$coefficients[[2]]
+  results$meta$duration_three <- duration_three
   
   # Again, we have 3 simple a/b/c schemes (pick max prod/sum; min sd) and
   # then we have the minimum sd according to the log-tolerance, both for
@@ -968,7 +1032,7 @@ evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
   }
   
   results$Three <- resultsThree
-  
+
   
   
   #########################################################################
@@ -977,6 +1041,8 @@ evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
   
   # Scheme 4 is conditional on the data NOT be oversampled. That is
   # because we flatten an observation and thus require a fixed length.
+  # With oversampling, we have too many or few representations of the same
+  # sample.
   # Scheme 4 reuses the model we fit in scheme 3, and roughly does this:
   # - Pass the training data through the network (not the validation data)
   #   to obtain the network's activations
@@ -997,7 +1063,7 @@ evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
     for (obsId in unqTrainIds) {
       trainSample_X <- as.matrix(data$train_X[data$train_Y_obsId == obsId, ])
       trainSample_Y <- as.matrix(data$train_Y[data$train_Y_obsId == obsId, ])
-      idx11 <- which(trainSample_Y[, "y_t1"] == 1 & trainSample_Y[, "y_t0"] == 1)
+      idx11 <- which(trainSample_Y[, yCols[1]] == 1 & trainSample_Y[, yCols[2]] == 1)
       vec11 <- rep(0, length(states)**2)
       vec11[idx11] <- 1
       
@@ -1034,7 +1100,7 @@ evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
       valid_Y_four[obsId, ] <- vec11
     }
     
-    # Don't forget to scale the data:
+    # Don't forget to scale the data:•
     train_X_four <- as.data.frame(train_X_four)
     valid_X_four <- as.data.frame(valid_X_four)
     
@@ -1045,15 +1111,19 @@ evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
     last.warning <- NULL
     # Now we can train the 2nd-stage network and make predictions.
     set.seed(hp$resampleSeed)
-    nnet <- neuralnet::neuralnet(
-      formula = formula(paste0(paste(paste0("V", (ncol(train_X_four) + 1):(ncol(train_X_four) + ncol(train_Y_four))), collapse = " + "), "~.")),
-      data = as.data.frame(cbind(train_X_four, train_Y_four)), # so we get col-names
-      hidden = 6,
-      stepmax = 15e4,
-      startweights = glorot_weights(numIn = length(states)**2 + 2, numOut = 8),
-      lifesign = "none")
+    nnet <- tryCatch({
+      neuralnet::neuralnet(
+        formula = formula(paste0(paste(paste0("V", (ncol(train_X_four) + 1):(ncol(train_X_four) + ncol(train_Y_four))), collapse = " + "), "~.")),
+        data = as.data.frame(cbind(train_X_four, train_Y_four)), # so we get col-names
+        hidden = 7,
+        stepmax = 15e4,
+        startweights = glorot_weights(numIn = length(states)**2 + 2, numOut = 8),
+        lifesign = "none")
+    }, error=function(cond) {
+      cond
+    })
     
-    if (length(grep("did not converge", names(last.warning))) == 0) {
+    if (("weights" %in% names(nnet)) && length(grep("did not converge", names(last.warning))) == 0) {
       # There is no strategy other than picking the maximum activation out
       # of the true one-hot vector.
       pred_4 <- matrix(nrow = length(unqObsIds), ncol = 1)
@@ -1073,7 +1143,10 @@ evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
       results$Four <- firstOrderPredToFlatConfmats(
         groundTruth = groundTruth, pred = pred_4[, 1], states = states)
     } else {
-      results$Four <- "Error: did not converge"
+      results$Four <- NULL
+      # do not set an extra error string, we know when we're
+      # supposed to have the fourth result.
+      #results$Four <- "Error: did not converge"
     }
   }
   

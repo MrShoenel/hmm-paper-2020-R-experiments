@@ -25,6 +25,15 @@ swish_d1 <- function(x) {
   return(ex * (x + ex + 1) / (ex + 1)**2)
 }
 
+gelu <- function(x) {
+  return(x/2 * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3))))
+}
+
+gelu_d1 <- function(x) {
+  x3 <- x^3
+  return(0.5 * tanh(0.0356774 * x3 + 0.797885 * x) + (0.0535161 * x3 + 0.398942 * x) * (pracma::sech(0.0356774 * x3 + 0.797885 * x)^2) + 0.5)
+}
+
 sigmoid <- function(x) {
   return(e1071::sigmoid(x))
   #return(1 / (1 + exp(-x)))
@@ -48,6 +57,7 @@ modp <- function(x, m) {
 
 
 m1 <- function(x_i, w_h, b_h, w_o, b_o, act.fn = relu, act.fn.derive = relu_d1) {
+  x_i <- as.vector(x_i)
   num_inputs <- length(x_i)
   num_hidden <- length(w_h) / num_inputs
   w_per_hidden <- length(w_h) / num_hidden
@@ -263,8 +273,6 @@ gradient_descent_m1 <- function(X, Y, w_h_0, b_h_0, w_o_0, b_o_0, epochs = 1e2, 
   use_X <- X
   use_Y <- Y
   
-  patMat <- matrix(nrow = 1, ncol = patience, data = rep(precision * 2, patience))
-  
   for (i in 1:epochs) {
     if (batch_size > 0) {
       rns <- sample(1:nrow(X), size = batch_size)
@@ -297,13 +305,12 @@ gradient_descent_m1 <- function(X, Y, w_h_0, b_h_0, w_o_0, b_o_0, epochs = 1e2, 
         act.fn = act.fn, act.fn.derive = act.fn.derive,
         err.fn = err.fn))
     
-    # Add the current largest step to the patience-matrix. Only if all
-    # of the last n steps are < precision, we can stop.
-    patMat[1, modp(i, patience)] <- max(c(step_w_o, step_b_o, step_w_h, step_b_h))
-    
-    if (all(patMat < precision)) {
-      print("Stopping early, as the improvement is less than the threshold.")
-      break
+    if (length(hist_loss) >= patience) {
+      hist_last <- tail(hist_loss, patience)
+      if ((max(hist_last) - min(hist_last)) < precision) {
+        print("Stopping early, as the improvement is less than the threshold.")
+        break
+      }
     }
   }
   
@@ -318,6 +325,8 @@ gradient_descent_m1 <- function(X, Y, w_h_0, b_h_0, w_o_0, b_o_0, epochs = 1e2, 
 
 
 m1_predict <- function(X, Y_actual, w_h, b_h, w_o, b_o, act.fn = relu, act.fn.derive = relu_d1, err.fn = wRSS) {
+  X <- as.matrix(X)
+  Y_actual <- as.matrix(Y_actual)
   N <- nrow(X)
   num_output <- length(b_o)
   Y <- matrix(nrow = N, ncol = num_output + 1)

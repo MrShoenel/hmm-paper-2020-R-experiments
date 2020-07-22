@@ -4,12 +4,34 @@ output: html_notebook
 ---
 
 ```{r}
+if (length(grep("notebooks$", getwd())) == 0) {
+  stop("Wrong working directory; must be ./notebooks")
+}
+```
+
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+olReqPkgs <- c(
+  "pracma", "e1071", "neuralnet", "parallel", "doParallel", "doSNOW",
+  "ranger", "knitr", "devtools", "caret", "mlbench", "DMwR")
+install.packagesCond(olReqPkgs)
+for (pkg in olReqPkgs) { library.silent(pkg) }
+
+# This package is for Bayesian tools:
+if ("mmb" %in% rownames(installed.packages()) == FALSE) {
+  remotes::install_github("MrShoenel/R-mmb@ac92c4c", subdir = "pkg/mmb")
+}
+library("mmb")
+```
+
+```{r echo=FALSE, warning=FALSE, message=FALSE}
 source("../helpers.R", echo = FALSE)
 source("../models/conddens.R", echo = FALSE)
 source("../models/depmix.R", echo = FALSE)
 source("../models/neural.R", echo = FALSE)
 source("../models/rssOrdered.R", echo = FALSE)
 ```
+
 
 
 # Introduction
@@ -37,32 +59,36 @@ set.seed(0xc0de)
 olHp <- expand.grid(
   # This is for the cross validation. All pseudo-random functionality
   # should use this.
-  resampleSeed = as.integer(runif(5, max = 2**31)),
-  batchSize = c(8, 16, 32, 64),
-  # There is only one hidden layer.
-  neurons = c(5, 10, 17, 30, 50),
-  err.fct = c("RSS", "wRSS", "omeRSS", "ome2RSS"),
-  act.fct = c("Lrelu", "swish"),
+  resampleSeed = c(23),#as.integer(runif(5, max = 2**31)),
+  dens.fct = c("epdf"),#c("ecdf", "1-ecdf", "epdf", "epdf_scaled"),
   # Whether to oversample the unbalanced data before training.
   oversample = c(TRUE, FALSE),
-  learningRate = c(0.05, 0.005, 0.0005),
-  useKeywords = c(TRUE, FALSE),
+  useKeywords = c(FALSE),#c(TRUE, FALSE),
   # data is always scaled, but scaling for density(data) is conditional.
-  # If keywords are included, there added to data before any other steps,
+  # If keywords are included, they're added to data before any other steps,
   # hence if data is scaled, so are the keywords.
-  useDatatype = c("data", "density", "both", "density_scaled", "both_scaled"),
+  # Note the explicit type "data" is not included here, because our tests
+  # for ordered loss are not compatible with it.
+  useDatatype = c("density", "both", "density_scaled", "both_scaled"),
   # How to compute the densities for each continuous random variable.
   # Since PDFs are not necessary in the codomain [0,1], we have an extra
   # option to use scaled PDFs.
-  dens.fct = c("ecdf", "1-ecdf", "epdf", "epdf_scaled")
+  batchSize = c(16),#c(8, 16, 32, 64),
+  # There is only one hidden layer.
+  neurons = c(5),#c(5, 10, 17, 30, 50),
+  learningRate = c(0.05),#c(0.05, 0.005, 0.0005),
+  err.fct = c("ome2RSS"),#c("RSS", "wRSS", "omeRSS", "ome2RSS"),
+  act.fct = c("gelu"),#c("Lrelu", "swish", "gelu"),
+  epochs = c(1e1) ################# CHANGE
 )
+
+# Attach an ID to each hyperparameter set:
+olHp$ID <- 1:nrow(olHp)
 ```
 
 Attach an ID to each set of hyperparameters - we need that because we will also add a filter at runtime as we're using many instances to compute this.
 
 ```{r}
-# Attach an ID to each hyperparameter set:
-olHp$ID <- 1:nrow(olHp)
 # Insert filter here:
 #olHp <- olHp[olHp$oversample == FALSE, ]
 ```
@@ -114,20 +140,138 @@ fitRandomForest <- function(hp, data, dataKw, states, stateColumn) {
 
 ```{r}
 doWithParallelCluster({
-  pb <- txtProgressBar(min=1, max=nrow(rfHp), style=3)
+  pb <- txtProgressBar(min=1, max=nrow(olHp), style=3)
   progress <- function(n) setTxtProgressBar(pb, n)
   
-  tryCatch({
+  data <- get1stOrderCommits()
+  for (cn in colnames(data)) {
+    if (is.character(data[, cn])) {
+      # We have to do this, as oversampling will throw errors otherwise.
+      data[, cn] <- as.factor(data[, cn])
+    }
+  }
+  
+  kw_t0 <- detectCommitKeywords(data$Message_t_0)
+  colnames(kw_t0) <- paste0(colnames(kw_t0), "_t_0")
+  kw_t1 <- detectCommitKeywords(data$Message_t_1)
+  colnames(kw_t1) <- paste0(colnames(kw_t1), "_t_1")
+  dataKw <- data.frame(cbind(kw_t0, kw_t1))
+  
+  states = sort(levels(commits_t1$label_t_0))
+  
+  allResults <- tryCatch({
     foreach::foreach(
-      hpIdx = rownames(rfHp), .packages = c("ranger"),
+      hpIdx = rownames(olHp),
+      .packages = olReqPkgs,
       .options.snow = list(progress = progress)
     ) %dopar% {
+      hp <- olHp[hpIdx, ]
+      hpId <- hp$ID
       
+      result <- tryCatch({
+        evaluateHpOrderedLoss(
+          hp = hp, data = data, dataKw = dataKw, states = states, stateColumn = "label_t_0")
+      }, error=function(cond) cond)
+      
+      hadError <- is.list(result) && "message" %in% names(result)
+      
+      if (hadError) {
+        writeOrAppend.csv("../results/ordered-loss_error.csv", data = data.frame(
+          message = result$message,
+          trace = trimws(as.character(.traceback(r)))
+        ))
+      } else {
+        # It worked, let's sort out the results. The result-types are as follows:
+        # One/Three: type -> b/l/r
+        # Two: type (no b/l/r)
+        # Four: b/l/r (no type)
+        # Results One/Two are NULL if the density was scaled.
+        # Result Three is always present.
+        # Result Four is present if the data was NOT overscaled.
+        
+        dfR1 <- NULL
+        if (is.list(result$One)) {
+          for (scheme in names(result$One)) {
+            res_b <- result$One[[scheme]][["both"]]
+            res_l <- result$One[[scheme]][["left"]]
+            res_r <- result$One[[scheme]][["right"]]
+            
+            # Add Id and type:
+            res_all <- cbind(
+              data.frame(hpId = hpId, scheme = scheme),
+              res_b, res_l, res_r)
+            # Add:
+            dfR1 <- rbind(dfR1, res_all)
+          }
+          
+          writeOrAppend.csv("../results/ordered-loss_R1.csv", data = dfR1)
+        }
+        
+        
+        dfR3 <- NULL
+        if (is.list(result$Three)) {
+          for (scheme in names(result$Three)) {
+            res_b <- result$Three[[scheme]][["both"]]
+            res_l <- result$Three[[scheme]][["left"]]
+            res_r <- result$Three[[scheme]][["right"]]
+            
+            res_all <- cbind(
+              data.frame(hpId = hpId, scheme = scheme),
+              res_b, res_l, res_r)
+            dfR3 <- rbind(dfR3, res_all)
+          }
+          
+          writeOrAppend.csv("../results/ordered-loss_R3.csv", data = dfR3)
+        }
+        
+        
+        dfR2 <- NULL
+        if (is.list(result$Two)) {
+          for (scheme in names(result$Two)) {
+            res_all <- cbind(
+              data.frame(hpId = hpId, scheme = scheme),
+              result$Two[[scheme]])
+            dfR2 <- rbind(dfR2, res_all)
+          }
+          
+          writeOrAppend.csv("../results/ordered-loss_R2.csv", data = dfR2)
+        }
+        
+        
+        dfR4 <- NULL
+        if (is.list(result$Four)) {
+          res_all <- data.frame(matrix(nrow = 1, ncol = 0))
+          for (blr in names(result$Four)) {
+            res_all <- cbind(res_all, result$Four[[blr]])
+          }
+          
+          dfR4 <- cbind(
+            data.frame(hpId = hpId), res_all)
+          
+          writeOrAppend.csv("../results/ordered-loss_R4.csv", data = dfR4)
+        }
+        
+        
+        dfMeta <- NULL
+        if (is.list(result$meta)) {
+          dfMeta <- cbind(
+            data.frame(hpId = hpId),
+            as.data.frame(result$meta))
+          
+          writeOrAppend.csv("../results/ordered-loss_meta.csv", data = dfMeta)
+        }
+      }
+      
+      # Finally return the raw result:
+      temp <- list()
+      temp[[hpId]] <- result
+      temp
     }
-    
   }, finally = {
     close(pb)
   })
+  
+  saveRDS(allResults, "allResults_ordered-loss.rds")
 })
 ```
 
@@ -136,7 +280,7 @@ doWithParallelCluster({
 
 # Function used in Training
 
-Now we are going to define one large function that will take one set of hyperparameters and execute all evaluations neccessary, before returning all of the results.
+Now we are going to define one function that will take one set of hyperparameters and execute all evaluations neccessary, before returning all of the results. We get a lot of different results and will also write them to a specific CSV intermittently.
 
 ```{r}
 # Mostly columns that could be used to identify a column. Note that
@@ -164,7 +308,23 @@ ignoreCols <- c(
 
 
 ```{r}
-
+doWithParallelCluster(numCores = 10, expr = {
+  pb <- txtProgressBar(min=1, max=nrow(rfHp), style=3)
+  progress <- function(n) setTxtProgressBar(pb, n)
+  
+  tryCatch({
+    foreach::foreach(
+      hpIdx = rownames(rfHp),
+      .packages = c("ranger"),
+      .options.snow = list(progress = progress)
+    ) %dopar% {
+      
+    }
+    
+  }, finally = {
+    close(pb)
+  })
+})
 ```
 
 

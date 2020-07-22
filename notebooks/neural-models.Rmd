@@ -14,7 +14,7 @@ We want to test our model `__m1__` using the weighted RSS loss (_wRSS_). The tes
 ```{r}
 set.seed(0xbeef)
 
-lxl <- 4
+lxl <- 3
 wh_xor <- glorot_weights(2,lxl)
 bh_xor <- glorot_weights(1,lxl)
 wo_xor <- glorot_weights(lxl,1)
@@ -30,8 +30,8 @@ Let's train the network!
 xor_weights <- gradient_descent_m1(
   X=XY_xor[,1:2], Y=matrix(data = XY_xor[,3], nrow = 4),
   w_h_0 = wh_xor, b_h_0 = bh_xor, w_o_0 = wo_xor, b_o_0 = bo_xor,
-  epochs = 1e5, learning_rate = 1e-1, precision = 5e-6, patience = 10,
-  act.fn = lrelu, act.fn.derive = lrelu_d1,
+  epochs = 3e4, learning_rate = 1e-2, precision = 1e-6, patience = 10,
+  act.fn = gelu, act.fn.derive = gelu_d1,
   err.fn = RSS, err.fn.derive = RSS_d1)
 ```
 
@@ -42,7 +42,7 @@ print(sapply(1:nrow(XY_xor), function(rn) {
     Y = matrix(data = XY_xor[rn ,3], nrow = 1),
     w_h = xor_weights$w_h, b_h = xor_weights$b_h,
     w_o = xor_weights$w_o, b_o = xor_weights$b_o,
-    act.fn = relu, act.fn.derive = relu_d1,
+    act.fn = gelu, act.fn.derive = gelu_d1,
     err.fn = RSS)
 }))
 
@@ -52,7 +52,7 @@ print(sapply(1:nrow(XY_xor), function(rn) {
   m1(x_i = XY_xor[rn, 1:2],
     w_h = xor_weights$w_h, b_h = xor_weights$b_h,
     w_o = xor_weights$w_o, b_o = xor_weights$b_o,
-    act.fn = relu, act.fn.derive = relu_d1)
+    act.fn = gelu, act.fn.derive = gelu_d1)
 }))
 ```
 
@@ -92,7 +92,7 @@ z <- outer(x, y, function(x1,x2) {
 persp(x, y, z,
       main="Perspective Plot of XOR",
       zlab = "m1 output",
-      theta = 235, phi = 205,
+      theta = 135, phi = 25,
       col = "springgreen", shade = 0.33)
 ```
 
