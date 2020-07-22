@@ -141,7 +141,8 @@ fitRandomForest <- function(hp, data, dataKw, states, stateColumn) {
 
 
 ```{r}
-doWithParallelCluster({
+# Slightly over-commit to keep it busy
+doWithParallelCluster(numCores = as.integer(1.15 * parallel::detectCores()), expr = {
   pb <- txtProgressBar(min=1, max=nrow(olHp), style=3)
   progress <- function(n) setTxtProgressBar(pb, n)
   
@@ -160,7 +161,7 @@ doWithParallelCluster({
   colnames(kw_t1) <- paste0(colnames(kw_t1), "_t_1")
   dataKw <- data.frame(cbind(kw_t0, kw_t1))
   
-  states = sort(levels(commits_t1$label_t_0))
+  states = sort(levels(data$label_t_0))
   
   allResults <- tryCatch({
     foreach::foreach(
