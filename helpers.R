@@ -11,10 +11,6 @@ library.silent <- function(libName) {
   suppressWarnings(suppressMessages(library(package=libName, character.only = TRUE)))
 }
 
-install.packagesCond("rstudioapi")
-library.silent("rstudioapi")
-install.packagesCond("RMariaDB")
-library.silent("RMariaDB")
 
 
 if (interactive()) {
@@ -480,6 +476,26 @@ generateDataForHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) 
   if (hp$useKeywords) {
     data <- cbind(data, dataKw)
   }
+  
+  ignoreCols <- c(
+    "project", # because of scarce data, we train and evaluate only cross-project
+    "commitId",
+    "labelledBefore",
+    "reasonOrRule",
+    "RepoPathOrUrl",
+    "CommitterName",
+    "CommitterTime",
+    "CommitterEmail",
+    "CommitterNominalLabel",
+    "ParentCommitSHA1s",
+    "Message",
+    "branch",
+    "SHA1",
+    "AuthorName",
+    "AuthorTime",
+    "AuthorEmail",
+    "AuthorNominalLabel"
+  )
   
   # Remove features we ALWAYS ignore:
   data <- data[, !grepAnyOrAll(ignoreCols, colnames(data))]

@@ -9,6 +9,13 @@ if (length(grep("notebooks$", getwd())) == 0) {
 }
 ```
 
+```{r echo=FALSE, warning=FALSE, message=FALSE}
+source("../helpers.R", echo = FALSE)
+source("../models/conddens.R", echo = FALSE)
+source("../models/depmix.R", echo = FALSE)
+source("../models/neural.R", echo = FALSE)
+source("../models/rssOrdered.R", echo = FALSE)
+```
 
 ```{r echo=FALSE, warning=FALSE, message=FALSE}
 olReqPkgs <- c(
@@ -24,13 +31,6 @@ if ("mmb" %in% rownames(installed.packages()) == FALSE) {
 library("mmb")
 ```
 
-```{r echo=FALSE, warning=FALSE, message=FALSE}
-source("../helpers.R", echo = FALSE)
-source("../models/conddens.R", echo = FALSE)
-source("../models/depmix.R", echo = FALSE)
-source("../models/neural.R", echo = FALSE)
-source("../models/rssOrdered.R", echo = FALSE)
-```
 
 
 
@@ -145,7 +145,8 @@ doWithParallelCluster({
   pb <- txtProgressBar(min=1, max=nrow(olHp), style=3)
   progress <- function(n) setTxtProgressBar(pb, n)
   
-  data <- get1stOrderCommits()
+  #data <- get1stOrderCommits()
+  data <- readRDS("./commits_t1.rds")
   for (cn in colnames(data)) {
     if (is.character(data[, cn])) {
       # We have to do this, as oversampling will throw errors otherwise.
@@ -310,23 +311,23 @@ ignoreCols <- c(
 
 
 ```{r}
-doWithParallelCluster(numCores = 10, expr = {
-  pb <- txtProgressBar(min=1, max=nrow(rfHp), style=3)
-  progress <- function(n) setTxtProgressBar(pb, n)
-  
-  tryCatch({
-    foreach::foreach(
-      hpIdx = rownames(rfHp),
-      .packages = c("ranger"),
-      .options.snow = list(progress = progress)
-    ) %dopar% {
-      
-    }
-    
-  }, finally = {
-    close(pb)
-  })
-})
+# doWithParallelCluster(numCores = 10, expr = {
+#   pb <- txtProgressBar(min=1, max=nrow(rfHp), style=3)
+#   progress <- function(n) setTxtProgressBar(pb, n)
+#   
+#   tryCatch({
+#     foreach::foreach(
+#       hpIdx = rownames(rfHp),
+#       .packages = c("ranger"),
+#       .options.snow = list(progress = progress)
+#     ) %dopar% {
+#       
+#     }
+#     
+#   }, finally = {
+#     close(pb)
+#   })
+# })
 ```
 
 
