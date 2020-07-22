@@ -93,6 +93,9 @@ Attach an ID to each set of hyperparameters - we need that because we will also 
 ```{r}
 # Insert filter here:
 #olHp <- olHp[olHp$oversample == FALSE, ]
+# (Deterministically) Randomize samples:
+set.seed(0xc0de)
+olHp <- olHp[sample(rownames(olHp)), ]
 ```
 
 As of above, we will compute a total of `r nrow(olHp)` sets of hyperparameters. For reasons of comparison, we will attempt fitting a Random forest to each of the used datasets and to each seed. However, the other hyperparameters do not matter for those, so that we will create a separate grid and also obtain the results separately.
