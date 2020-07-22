@@ -185,7 +185,7 @@ doWithParallelCluster(numCores = as.integer(1.15 * parallel::detectCores()), exp
       if (hadError) {
         writeOrAppend.csv("../results/ordered-loss_error.csv", data = data.frame(
           message = result$message,
-          trace = trimws(as.character(.traceback(r)))
+          trace = trimws(as.character(.traceback(result)))
         ))
       } else {
         # It worked, let's sort out the results. The result-types are as follows:
