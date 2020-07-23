@@ -964,93 +964,97 @@ evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
   }
   
   start_three <- as.numeric(Sys.time())
-  m1Fit <- gradient_descent_m1(
-    X = as.matrix(data$train_X), Y = as.matrix(data$train_Y),
-    w_h_0 = weights_hidden, b_h_0 = biases_hidden,
-    w_o_0 = weights_output, b_o_0 = biases_output,
-    epochs = hp$epochs, learning_rate = hp$learningRate,
-    precision = 1e-3, batch_size = hp$batchSize,
-    act.fn = act.fct, act.fn.derive = act.fct.derive,
-    err.fn = err.fct, err.fn.derive = err.fct.derive
-  )
+  m1Fit <- tryCatch({
+    gradient_descent_m1(
+      X = as.matrix(data$train_X), Y = as.matrix(data$train_Y),
+      w_h_0 = weights_hidden, b_h_0 = biases_hidden,
+      w_o_0 = weights_output, b_o_0 = biases_output,
+      epochs = hp$epochs, learning_rate = hp$learningRate,
+      precision = hp$precision, patience = hp$patience,
+      batch_size = hp$batchSize,
+      act.fn = act.fct, act.fn.derive = act.fct.derive,
+      err.fn = err.fct, err.fn.derive = err.fct.derive)
+  }, error=function(cond) cond)
   duration_three <- as.numeric(Sys.time()) - start_three
   
-  # Store some meta for the result obtained:
-  tempLm <- lm(
-    formula = y~x,
-    data = data.frame(x = 1:length(m1Fit$hist_loss), y = m1Fit$hist_loss))
-  results$meta$hist_length <- length(m1Fit$hist_loss) - 1
-  results$meta$epochs_used_perc <- (length(m1Fit$hist_loss) - 1) / hp$epochs
-  results$meta$hist_intercept <- tempLm$coefficients[[1]]
-  results$meta$hist_slope <- tempLm$coefficients[[2]]
-  results$meta$duration_three <- duration_three
-  
-  # Again, we have 3 simple a/b/c schemes (pick max prod/sum; min sd) and
-  # then we have the minimum sd according to the log-tolerance, both for
-  # products and sums.
-  pred_3 <- matrix(ncol = 3 + 2 * length(logTols), nrow = length(unqObsIds))
-  colnames(pred_3) <- c(paste0("simple_", c("a", "b", "c")),
-                        paste0("d_prod_", formatC(logTols, format = "e", digits = 0)),
-                        paste0("d_sum_", formatC(logTols, format = "e", digits = 0)))
-  rownames(pred_3) <- unqObsIds
-  
-  for (obsId in unqObsIds) {
+  if (!is.error(m1Fit)) {
+    # Store some meta for the result obtained:
+    tempLm <- lm(
+      formula = y~x,
+      data = data.frame(x = 1:length(m1Fit$hist_loss), y = m1Fit$hist_loss))
+    results$meta$hist_length <- length(m1Fit$hist_loss) - 1
+    results$meta$epochs_used_perc <- (length(m1Fit$hist_loss) - 1) / hp$epochs
+    results$meta$hist_intercept <- tempLm$coefficients[[1]]
+    results$meta$hist_slope <- tempLm$coefficients[[2]]
+    results$meta$duration_three <- duration_three
     
-    # Rows is estimators, cols are pred_t0, pred_t1, prod, sum, sd, log10(prod), log10(sum)
-    votemat <- matrix(nrow = length(states)**2, ncol = 7)
-    rownames(votemat) <- statesCombined
+    # Again, we have 3 simple a/b/c schemes (pick max prod/sum; min sd) and
+    # then we have the minimum sd according to the log-tolerance, both for
+    # products and sums.
+    pred_3 <- matrix(ncol = 3 + 2 * length(logTols), nrow = length(unqObsIds))
+    colnames(pred_3) <- c(paste0("simple_", c("a", "b", "c")),
+                          paste0("d_prod_", formatC(logTols, format = "e", digits = 0)),
+                          paste0("d_sum_", formatC(logTols, format = "e", digits = 0)))
+    rownames(pred_3) <- unqObsIds
     
-    validSample <- data$valid_X[data$valid_Y_obsId == obsId, ]
-    
-    for (state_i in states) {
-      for (state_j in states) {
-        # Now for each estimator, we inference the sample and produce estimates
-        # for state t-1 and t0.
-        est_t1 <- which(states == state_i)
-        est_t0 <- which(states == state_j)
+    for (obsId in unqObsIds) {
+      
+      # Rows is estimators, cols are pred_t0, pred_t1, prod, sum, sd, log10(prod), log10(sum)
+      votemat <- matrix(nrow = length(states)**2, ncol = 7)
+      rownames(votemat) <- statesCombined
+      
+      validSample <- data$valid_X[data$valid_Y_obsId == obsId, ]
+      
+      for (state_i in states) {
+        for (state_j in states) {
+          # Now for each estimator, we inference the sample and produce estimates
+          # for state t-1 and t0.
+          est_t1 <- which(states == state_i)
+          est_t0 <- which(states == state_j)
+          
+          # Returns a matrix with one row:
+          predRaw <- m1(x_i = as.matrix(validSample[validSample$est_t1 == est_t1 & validSample$est_t0 == est_t0, ]),
+                        w_h = m1Fit$w_h, b_h = m1Fit$b_h, w_o = m1Fit$w_o, b_o = m1Fit$b_o,
+                        act.fn = act.fct, act.fn.derive = act.fct.derive)
+          
+          # Note the order here; j corresponds to t0, and i to t-1.
+          # This is how it was passed to the network as Y.
+          estimatorName <- paste0(state_i, state_j)
+          votemat[estimatorName, 1:2] <- predRaw[1, ]
+          votemat[estimatorName, 3:5] <- c(prod(predRaw[1, ]), sum(predRaw[1, ]), sd(predRaw[1, ]))
+          votemat[estimatorName, 6:7] <- log10(votemat[estimatorName, 3:4])
+        }
+      }
+      
+      pred_3[obsId, "simple_a"] <- names(which.max(votemat[, 3]))
+      pred_3[obsId, "simple_b"] <- names(which.max(votemat[, 4]))
+      pred_3[obsId, "simple_c"] <- names(which.min(votemat[, 5]))
+      
+      for (lt in logTols) {
+        ltStr <- formatC(lt, format = "e", digits = 0)
         
-        # Returns a matrix with one row:
-        predRaw <- m1(x_i = as.matrix(validSample[validSample$est_t1 == est_t1 & validSample$est_t0 == est_t0, ]),
-                      w_h = m1Fit$w_h, b_h = m1Fit$b_h, w_o = m1Fit$w_o, b_o = m1Fit$b_o,
-                      act.fn = act.fct, act.fn.derive = act.fct.derive)
+        maxLogProd <- votemat[which.max(votemat[, 6]), 6]
+        maxLogSum <- votemat[which.max(votemat[, 7]), 7]
         
-        # Note the order here; j corresponds to t0, and i to t-1.
-        # This is how it was passed to the network as Y.
-        estimatorName <- paste0(state_i, state_j)
-        votemat[estimatorName, 1:2] <- predRaw[1, ]
-        votemat[estimatorName, 3:5] <- c(prod(predRaw[1, ]), sum(predRaw[1, ]), sd(predRaw[1, ]))
-        votemat[estimatorName, 6:7] <- log10(votemat[estimatorName, 3:4])
+        equalLogsProd <- which(votemat[, 6] >= (maxLogProd - lt))
+        equalLogsSum <- which(votemat[, 7] >= (maxLogSum - lt))
+        
+        minSdProd <- which.min(votemat[equalLogsProd, 5])
+        minSdSum <- which.min(votemat[equalLogsSum, 5])
+        
+        pred_3[obsId, paste0("d_prod_", ltStr)] <- names(minSdProd)
+        pred_3[obsId, paste0("d_sum_", ltStr)] <- names(minSdSum)
       }
     }
     
-    pred_3[obsId, "simple_a"] <- names(which.max(votemat[, 3]))
-    pred_3[obsId, "simple_b"] <- names(which.max(votemat[, 4]))
-    pred_3[obsId, "simple_c"] <- names(which.min(votemat[, 5]))
-    
-    for (lt in logTols) {
-      ltStr <- formatC(lt, format = "e", digits = 0)
-      
-      maxLogProd <- votemat[which.max(votemat[, 6]), 6]
-      maxLogSum <- votemat[which.max(votemat[, 7]), 7]
-      
-      equalLogsProd <- which(votemat[, 6] >= (maxLogProd - lt))
-      equalLogsSum <- which(votemat[, 7] >= (maxLogSum - lt))
-      
-      minSdProd <- which.min(votemat[equalLogsProd, 5])
-      minSdSum <- which.min(votemat[equalLogsSum, 5])
-      
-      pred_3[obsId, paste0("d_prod_", ltStr)] <- names(minSdProd)
-      pred_3[obsId, paste0("d_sum_", ltStr)] <- names(minSdSum)
+    resultsThree <- list()
+    for (resType in colnames(pred_3)) {
+      resultsThree[[resType]] <- firstOrderPredToFlatConfmats(
+        groundTruth = groundTruth, pred = pred_3[, resType], states = states)
     }
+    
+    results$Three <- resultsThree
   }
-  
-  resultsThree <- list()
-  for (resType in colnames(pred_3)) {
-    resultsThree[[resType]] <- firstOrderPredToFlatConfmats(
-      groundTruth = groundTruth, pred = pred_3[, resType], states = states)
-  }
-  
-  results$Three <- resultsThree
 
   
   
@@ -1067,7 +1071,7 @@ evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
   #   to obtain the network's activations
   # - Flatten each of the activation's for both states and create a true
   #   one-hot encoding of which estimators were picked correctly.
-  if (!hp$oversample) {
+  if (!is.error(m1Fit) && !hp$oversample) {
     unqTrainIds <- sort(unique(data$train_Y_obsId))
 
     train_X_four <- matrix(nrow = length(unqTrainIds), ncol = 2 + 2*length(states)**2)
