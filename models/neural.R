@@ -167,7 +167,7 @@ compute_grad_wRSS_m1 <- function(X, Y, w_h, b_h, w_o, b_o, act.fn = relu, act.fn
       grad_all <- sigmoid_d1(w %*% H[1, ] + b_o[j])
       
       if (!all(complete.cases(c(w, grad_all, m1_all)))) {
-        stop("42")
+        stop("m1: Gradient is partially NA/NaN")
       }
       
       
@@ -197,7 +197,7 @@ compute_grad_wRSS_m1 <- function(X, Y, w_h, b_h, w_o, b_o, act.fn = relu, act.fn
       }
       
       if (!all(complete.cases(grad_w_o))) {
-        stop("42")
+        stop("m1: Gradient for output-weights is partially NA/NaN")
       }
       
       # 2)
@@ -212,7 +212,7 @@ compute_grad_wRSS_m1 <- function(X, Y, w_h, b_h, w_o, b_o, act.fn = relu, act.fn
                       m = m1_all[j], m_d1 = m1_prime)
       
       if (!all(complete.cases(grad_b_o))) {
-        stop("42")
+        stop("m1: Gradient for output-biases is partially NA/NaN")
       }
       
       # 3)
@@ -230,7 +230,7 @@ compute_grad_wRSS_m1 <- function(X, Y, w_h, b_h, w_o, b_o, act.fn = relu, act.fn
       }
       
       if (!all(complete.cases(grad_w_h))) {
-        stop("42")
+        stop("m1: Gradient for hidden-weights is partially NA/NaN")
       }
       
       # 4)
@@ -247,7 +247,7 @@ compute_grad_wRSS_m1 <- function(X, Y, w_h, b_h, w_o, b_o, act.fn = relu, act.fn
       }
       
       if (!all(complete.cases(grad_b_h))) {
-        stop("42")
+        stop("m1: Gradient for hidden-biases is partially NA/NaN")
       }
     }
   }
