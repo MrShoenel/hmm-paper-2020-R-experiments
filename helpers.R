@@ -1,3 +1,6 @@
+# As returned by a tryCatch-construct on error
+is.error <- function(e) is.list(e) && all(c("message", "call") %in% names(e))
+
 install.packagesCond <- function(pkgs) {
   inst <- rownames(installed.packages())
   for (pkg in c(pkgs)) {
