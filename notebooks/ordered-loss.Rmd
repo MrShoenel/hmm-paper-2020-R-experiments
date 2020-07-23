@@ -20,7 +20,7 @@ source("../models/rssOrdered.R", echo = FALSE)
 ```{r echo=FALSE, warning=FALSE, message=FALSE}
 olReqPkgs <- c(
   "pracma", "e1071", "neuralnet", "parallel", "doParallel", "doSNOW",
-  "ranger", "knitr", "devtools", "caret", "mlbench", "DMwR", "filelock")
+  "ranger", "knitr", "devtools", "caret", "mlbench", "DMwR", "filelock", "progress")
 install.packagesCond(olReqPkgs)
 for (pkg in olReqPkgs) { library.silent(pkg) }
 
@@ -110,8 +110,10 @@ As of above, we will compute a total of `r nrow(olHp)` sets of hyperparameters. 
 ```{r}
 # Slightly over-commit to keep it busy
 doWithParallelCluster(numCores = as.integer(1.15 * parallel::detectCores()), expr = {
-  pb <- txtProgressBar(min=1, max=nrow(olHp), style=3)
-  progress <- function(n) setTxtProgressBar(pb, n)
+  pb <- progress::progress_bar$new(
+    format = ":current/:total computing [:bar] :percent eta: :eta",
+    total = nrow(olHp), clear = FALSE)
+  progress <- function(n) pb$tick()
   
   #data <- get1stOrderCommits()
   data <- readRDS("./commits_t1.rds")
@@ -144,11 +146,12 @@ doWithParallelCluster(numCores = as.integer(1.15 * parallel::detectCores()), exp
           hp = hp, data = data, dataKw = dataKw, states = states, stateColumn = "label_t_0")
       }, error=function(cond) cond)
       
-      hadError <- is.list(result) && "message" %in% names(result)
+      hadError <- is.error(result)
       
       if (hadError) {
         writeOrAppend.csv("../results/ordered-loss_error.csv", data = data.frame(
-          message = result$message,
+          hpId = hpId,
+          message = trimws(result$message),
           trace = trimws(as.character(.traceback(result)))
         ))
       } else {
@@ -239,7 +242,7 @@ doWithParallelCluster(numCores = as.integer(1.15 * parallel::detectCores()), exp
       temp
     }
   }, finally = {
-    close(pb)
+    pb$terminate()
   })
   
   saveRDS(allResults, "allResults_ordered-loss.rds")
