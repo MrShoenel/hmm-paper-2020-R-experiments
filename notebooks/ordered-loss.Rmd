@@ -108,49 +108,6 @@ olHp <- olHp[sample(rownames(olHp)), ]
 As of above, we will compute a total of `r nrow(olHp)` sets of hyperparameters. For reasons of comparison, we will attempt fitting a Random forest to each of the used datasets and to each seed. However, the other hyperparameters do not matter for those, so that we will create a separate grid and also obtain the results separately.
 
 ```{r}
-rfHp <- expand.grid(
-  resampleSeed = unique(olHp$resampleSeed),
-  useDatatype = unique(olHp$useDatatype),
-  useKeywords = unique(olHp$useKeywords),
-  oversample = unique(olHp$oversample)
-)
-```
-
-This will require a total of `r nrow(rfHp)` computations. We will define a function that takes one set of hyperparameters and fits a Random forest on it, then using the validation data to obtain metrics. This function will then be used in a parallel loop for all sets of hyperparameters.
-
-```{r}
-fitRandomForest <- function(hp, data, dataKw, states, stateColumn) {
-  # First, we create a joined label for the data.
-  stateColumn_t_1 <- gsub("_t_0$", "_t_1", stateColumn)
-  
-  trainValid <- generateDataForHpOrderedLoss(hp, data, dataKw, states, stateColumn)
-  train_X <- trainValid$train_X
-  train_Y <- trainValid$train_Y
-  valid_X <- trainValid$valid_X
-  valid_Y <- trainValid$valid_Y
-  
-  # We have to differentiate between two cases, based on the data:
-  # Either we get two actual labels in the data, "label_t_0", "label_t_1"
-  # (if data only, these are characters), or we get two binary labels
-  # that indicate whether the correct density functions were used for
-  # each state, hence the labels are 1/0 for "y_t1", "y_t0".
-  
-  useOnlyData <- hp$useDatatype == "data"
-  yCols <- if (useOnlyData) c(stateColumn, stateColumn_t_1) else c("y_t0", "y_t1")
-  
-  if (useOnlyData) {
-    train_Y <- data.frame(
-      Y = paste0(train_Y[[yCols[1]]], "__|__", train_Y[[yCols[2]]])
-    )
-    valid_Y <- data.frame(
-      Y = paste0(valid_Y[[yCols[1]]], "__|__", valid_Y[[yCols[2]]])
-    )
-  }
-}
-```
-
-
-```{r}
 # Slightly over-commit to keep it busy
 doWithParallelCluster(numCores = as.integer(1.15 * parallel::detectCores()), expr = {
   pb <- txtProgressBar(min=1, max=nrow(olHp), style=3)
@@ -291,35 +248,50 @@ doWithParallelCluster(numCores = as.integer(1.15 * parallel::detectCores()), exp
 
 
 
-
-# Function used in Training
-
-Now we are going to define one function that will take one set of hyperparameters and execute all evaluations neccessary, before returning all of the results. We get a lot of different results and will also write them to a specific CSV intermittently.
-
 ```{r}
-# Mostly columns that could be used to identify a column. Note that
-# we keep "label", as it'll be removed for inferencing only.
-ignoreCols <- c(
-  "project", # because of scarce data, we train and evaluate only cross-project
-  "commitId",
-  "labelledBefore",
-  "reasonOrRule",
-  "RepoPathOrUrl",
-  "CommitterName",
-  "CommitterTime",
-  "CommitterEmail",
-  "CommitterNominalLabel",
-  "ParentCommitSHA1s",
-  "Message",
-  "branch",
-  "SHA1",
-  "AuthorName",
-  "AuthorTime",
-  "AuthorEmail",
-  "AuthorNominalLabel"
+rfHp <- expand.grid(
+  # Use the same seeds so we get the exact same data:
+  resampleSeed = unique(olHp$resampleSeed),
+  useDatatype = c("data", unique(olHp$useDatatype)),
+  useKeywords = unique(olHp$useKeywords),
+  oversample = unique(olHp$oversample)
 )
 ```
 
+This will require a total of `r nrow(rfHp)` computations. We will define a function that takes one set of hyperparameters and fits a Random forest on it, then using the validation data to obtain metrics. This function will then be used in a parallel loop for all sets of hyperparameters.
+
+```{r}
+fitRandomForest <- function(hp, data, dataKw, states, stateColumn) {
+  # First, we create a joined label for the data.
+  stateColumn_t_1 <- gsub("_t_0$", "_t_1", stateColumn)
+  
+  trainValid <- generateDataForHpOrderedLoss(hp, data, dataKw, states, stateColumn)
+  train_X <- trainValid$train_X
+  train_Y <- trainValid$train_Y
+  valid_X <- trainValid$valid_X
+  valid_Y <- trainValid$valid_Y
+  
+  # We have to differentiate between two cases, based on the data:
+  # Either we get two actual labels in the data, "label_t_0", "label_t_1"
+  # (if data only, these are characters), or we get two binary labels
+  # that indicate whether the correct density functions were used for
+  # each state, hence the labels are 1/0 for "y_t1", "y_t0".
+  
+  useOnlyData <- hp$useDatatype == "data"
+  yCols <- if (useOnlyData) c(stateColumn, stateColumn_t_1) else c("y_t0", "y_t1")
+  
+  if (useOnlyData) {
+    train_Y <- data.frame(
+      Y = paste0(train_Y[[yCols[1]]], "__|__", train_Y[[yCols[2]]])
+    )
+    valid_Y <- data.frame(
+      Y = paste0(valid_Y[[yCols[1]]], "__|__", valid_Y[[yCols[2]]])
+    )
+  }
+}
+```
+
+Now train the random forest:
 
 ```{r}
 # doWithParallelCluster(numCores = 10, expr = {
