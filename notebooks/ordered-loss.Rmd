@@ -59,7 +59,7 @@ set.seed(0xc0de)
 olHp <- expand.grid(
   # This is for the cross validation. All pseudo-random functionality
   # should use this.
-  resampleSeed = as.integer(runif(5, max = 2**31)),
+  resampleSeed = as.integer(runif(3, max = 2**31)),
   dens.fct = c("ecdf", "1-ecdf", "epdf", "epdf_scaled"),
   # Whether to oversample the unbalanced data before training.
   oversample = c(TRUE, FALSE),
@@ -73,13 +73,19 @@ olHp <- expand.grid(
   # How to compute the densities for each continuous random variable.
   # Since PDFs are not necessary in the codomain [0,1], we have an extra
   # option to use scaled PDFs.
-  batchSize = c(8, 16, 32, 64),
+  #batchSize = c(8, 16, 32, 64),
+  batchSize = c(20, 46, 72),
   # There is only one hidden layer.
-  neurons = c(5, 10, 17, 30, 50),
+  #neurons = c(5, 10, 17, 30, 50),
+  neurons = c(5, 15, 30),
   learningRate = c(0.05, 0.005, 0.0005),
   err.fct = c("RSS", "wRSS", "omeRSS", "ome2RSS"),
-  act.fct = c("Lrelu", "swish", "gelu"),
-  epochs = c(2e4)
+  #act.fct = c("Lrelu", "swish", "gelu"),
+  act.fct = c("Lrelu", "swish"),
+  epochs = c(1e4),
+  # For early stopping we add these:
+  precision = c(5e-3),
+  patience = c(5)
 )
 
 # Attach an ID to each hyperparameter set:
@@ -91,8 +97,9 @@ write.csv(olHp, file = "../results/ordered-loss_hyperparams.csv")
 Attach an ID to each set of hyperparameters - we need that because we will also add a filter at runtime as we're using many instances to compute this.
 
 ```{r}
-# Insert filter here:
-#olHp <- olHp[olHp$oversample == FALSE, ]
+# Insert filter here (do not edit hyperparameters!):
+#olHp <- olHp[olHp$dens.fct == "ecdf", ]
+
 # (Deterministically) Randomize samples:
 set.seed(0xc0de)
 olHp <- olHp[sample(rownames(olHp)), ]
