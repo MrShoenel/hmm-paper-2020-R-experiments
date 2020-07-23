@@ -110,6 +110,8 @@ As of above, we will compute a total of `r nrow(olHp)` sets of hyperparameters. 
 ```{r}
 # Slightly over-commit to keep it busy
 doWithParallelCluster(numCores = as.integer(1.15 * parallel::detectCores()), expr = {
+  print(paste("[Started at]", Sys.time()))
+  
   pb <- progress::progress_bar$new(
     format = ":current/:total computing [:bar] :percent eta: :eta",
     total = nrow(olHp), clear = FALSE)
