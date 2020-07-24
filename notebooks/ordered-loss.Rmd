@@ -186,7 +186,9 @@ if (file.exists(varImpFile)) {
 
 ```{r}
 # Slightly over-commit to keep it busy
-doWithParallelCluster(numCores = as.integer(1.15 * parallel::detectCores()), expr = {
+numCores <- ceiling(1.05 * parallel::detectCores())
+
+doWithParallelCluster(numCores = numCores, expr = {
   print(paste("[Started at]", Sys.time()))
   
   pb <- progress::progress_bar$new(
@@ -222,7 +224,9 @@ doWithParallelCluster(numCores = as.integer(1.15 * parallel::detectCores()), exp
       
       result <- tryCatch({
         evaluateHpOrderedLoss(
-          hp = hp, data = data, dataKw = dataKw, states = states, stateColumn = "label_t_0")
+          hp = hp, data = data, dataKw = dataKw,
+          states = states, stateColumn = "label_t_0",
+          varImps = olVarImp)
       }, error=function(cond) cond)
       
       hadError <- is.error(result)

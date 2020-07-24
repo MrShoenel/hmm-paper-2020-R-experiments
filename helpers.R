@@ -651,7 +651,7 @@ generateDataForHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) 
 #' failed, the result list contains an error message for that scheme.
 #' If everything worked, the result contains a flattened confusion
 #' matrix. If not applicable, the entry will be NULL.
-evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
+evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn, m1EpochProgress = NULL, varImps = NULL) {
   if (!(hp$useDatatype %in% c("density", "density_scaled", "both", "both_scaled"))) {
     stop(paste0(hp$useDatatype, " not supported - need density."))
   }
@@ -919,14 +919,6 @@ evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
   # We have covered the first two schemes, now it's time for the main scheme:
   # Training a customized neural network. This network supports any kind of
   # data, and will even train with scaled density.
-  set.seed(hp$resampleSeed)
-  
-  lHl <- hp$neurons
-  weights_hidden <- glorot_weights(ncol(data$train_X),lHl)
-  biases_hidden <- glorot_weights(1, lHl)
-  weights_output <- glorot_weights(lHl, 2)
-  biases_output <- glorot_weights(1, ncol(data$train_Y))
-  
   
   act.fct.derive <- relu_d1
   if (hp$act.fct == "Lrelu") {
@@ -965,6 +957,26 @@ evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
   
   start_three <- as.numeric(Sys.time())
   m1Fit <- tryCatch({
+    if (is.data.frame(varImps) && ncol(data$train_X) > hp$maxVars) {
+      # Cut down the dimensionality of the data and use the
+      # n most important predictors.
+      
+      varImp <- varImps[varImps$resampleSeed == hp$resampleSeed & varImps$oversample == hp$oversample & varImps$useKeywords == hp$useKeywords & varImps$useDatatype == hp$useDatatype & varImps$dens.fct == hp$dens.fct, ]
+      varImp <- utils::head(varImp[order(-varImp$Overall), ], n = hp$maxVars)
+      data$train_X <- data$train_X[,
+        colnames(data$train_X) %in% c("est_t1", "est_t0", varImp$Predictor)]
+      data$valid_X <- data$valid_X[,
+        colnames(data$valid_X) %in% c("est_t1", "est_t0", varImp$Predictor)]
+    }
+    
+    set.seed(hp$resampleSeed)
+    
+    lHl <- hp$neurons
+    weights_hidden <- glorot_weights(ncol(data$train_X),lHl)
+    biases_hidden <- glorot_weights(1, lHl)
+    weights_output <- glorot_weights(lHl, 2)
+    biases_output <- glorot_weights(1, ncol(data$train_Y))
+    
     gradient_descent_m1(
       X = as.matrix(data$train_X), Y = as.matrix(data$train_Y),
       w_h_0 = weights_hidden, b_h_0 = biases_hidden,
@@ -973,7 +985,8 @@ evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn) {
       precision = hp$precision, patience = hp$patience,
       batch_size = hp$batchSize,
       act.fn = act.fct, act.fn.derive = act.fct.derive,
-      err.fn = err.fct, err.fn.derive = err.fct.derive)
+      err.fn = err.fct, err.fn.derive = err.fct.derive,
+      epochProgressCallback = m1EpochProgress)
   }, error=function(cond) cond)
   duration_three <- as.numeric(Sys.time()) - start_three
   
