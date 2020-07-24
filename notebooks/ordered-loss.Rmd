@@ -74,18 +74,21 @@ olHp <- expand.grid(
   # Since PDFs are not necessary in the codomain [0,1], we have an extra
   # option to use scaled PDFs.
   #batchSize = c(8, 16, 32, 64),
-  batchSize = c(20, 46, 72),
+  batchSize = c(20, 50),
   # There is only one hidden layer.
   #neurons = c(5, 10, 17, 30, 50),
-  neurons = c(5, 15, 30),
-  learningRate = c(0.05, 0.005, 0.0005),
+  neurons = c(5, 10, 20),
+  #learningRate = c(0.05, 0.005, 0.0005),
+  learningRate = c(0.05, 0.005),
   err.fct = c("RSS", "wRSS", "omeRSS", "ome2RSS"),
   #act.fct = c("Lrelu", "swish", "gelu"),
   act.fct = c("Lrelu", "swish"),
-  epochs = c(1e4),
+  epochs = c(25e2), # Most converge after latest 2000 eps
   # For early stopping we add these:
   precision = c(5e-3),
-  patience = c(5)
+  patience = c(5),
+  # Using variable importance, select the n most important variables:
+  maxVars = c(60)
 )
 
 # Attach an ID to each hyperparameter set:

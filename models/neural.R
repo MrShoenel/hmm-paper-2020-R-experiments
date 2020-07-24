@@ -262,7 +262,7 @@ compute_grad_wRSS_m1 <- function(X, Y, w_h, b_h, w_o, b_o, act.fn = relu, act.fn
 
 
 
-gradient_descent_m1 <- function(X, Y, w_h_0, b_h_0, w_o_0, b_o_0, epochs = 1e2, learning_rate = 1e-3, precision = 1e-4, patience = 5, batch_size = -1, act.fn = relu, act.fn.derive = relu_d1, err.fn = wRSS, err.fn.derive = wRSS_d1, valid_X = NULL, valid_Y = NULL) {
+gradient_descent_m1 <- function(X, Y, w_h_0, b_h_0, w_o_0, b_o_0, epochs = 1e2, learning_rate = 1e-3, precision = 1e-4, patience = 5, batch_size = -1, act.fn = relu, act.fn.derive = relu_d1, err.fn = wRSS, err.fn.derive = wRSS_d1, valid_X = NULL, valid_Y = NULL, epochProgressCallback = function(epochsDone) {}) {
   hist_loss <- c(loss_wRSS_m1(X=X, Y=Y, w_h = w_h_0, b_h = b_h_0, w_o = w_o_0, b_o = b_o_0, act.fn = act.fn, act.fn.derive = act.fn.derive, err.fn = err.fn))
   
   w_o <- w_o_0
@@ -272,6 +272,8 @@ gradient_descent_m1 <- function(X, Y, w_h_0, b_h_0, w_o_0, b_o_0, epochs = 1e2, 
   
   use_X <- X
   use_Y <- Y
+  
+  reportProgress <- is.function(epochProgressCallback)
   
   for (i in 1:epochs) {
     if (batch_size > 0) {
@@ -305,9 +307,16 @@ gradient_descent_m1 <- function(X, Y, w_h_0, b_h_0, w_o_0, b_o_0, epochs = 1e2, 
         act.fn = act.fn, act.fn.derive = act.fn.derive,
         err.fn = err.fn))
     
-    if (length(hist_loss) >= patience) {
-      hist_last <- tail(hist_loss, patience)
-      if ((max(hist_last) - min(hist_last)) < precision) {
+    if (reportProgress) {
+      epochProgressCallback(i)
+    }
+    
+    if (length(hist_loss) > patience) {
+      hist_last <- tail(hist_loss, patience + 1)
+      hist_very_last <- hist_last[patience + 1]
+      min_previous <- min(hist_last[1:patience])
+      
+      if (hist_very_last < min_previous && (min_previous - hist_very_last) < precision) {
         print("Stopping early, as the improvement is less than the threshold.")
         break
       }
