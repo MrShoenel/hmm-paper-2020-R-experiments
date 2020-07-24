@@ -107,6 +107,80 @@ olHp <- olHp[sample(rownames(olHp)), ]
 
 As of above, we will compute a total of `r nrow(olHp)` sets of hyperparameters. For reasons of comparison, we will attempt fitting a Random forest to each of the used datasets and to each seed. However, the other hyperparameters do not matter for those, so that we will create a separate grid and also obtain the results separately.
 
+In some of the runs, we'll end up with too many predictors, even after eliminating those with zero variance (note that we are keeping those with near-zero variance). However, training time increases exponentially with number of inputs, so we should use a maximum number of inputs. Therefore, for each possible dataset (data-type, resample-index, use keywords, oversample, density-function), we will compute the importance using a Random forest. This information can then be leveraged at runtime to limit the number of predictors.
+
+```{r}
+varImpHp <- expand.grid(
+  resampleSeed = unique(olHp$resampleSeed),
+  oversample = unique(olHp$oversample),
+  useKeywords = unique(olHp$useKeywords),
+  useDatatype = unique(olHp$useDatatype),
+  dens.fct = levels(olHp$dens.fct)
+)
+
+varImpFile <- "../results/ordered-loss_varImp.rds"
+if (file.exists(varImpFile)) {
+  olVarImp <- readRDS(varImpFile)
+} else {
+  olVarImp <- doWithParallelCluster({
+    foreach::foreach(
+      hpIdx = rownames(varImpHp),
+      .packages = olReqPkgs,
+      .combine = rbind
+    ) %dopar% {
+      #data <- get1stOrderCommits()
+      data <- readRDS("./commits_t1.rds")
+      for (cn in colnames(data)) {
+        if (is.character(data[, cn])) {
+          # We have to do this, as oversampling will throw errors otherwise.
+          data[, cn] <- as.factor(data[, cn])
+        }
+      }
+      
+      kw_t0 <- detectCommitKeywords(data$Message_t_0)
+      colnames(kw_t0) <- paste0(colnames(kw_t0), "_t_0")
+      kw_t1 <- detectCommitKeywords(data$Message_t_1)
+      colnames(kw_t1) <- paste0(colnames(kw_t1), "_t_1")
+      dataKw <- data.frame(cbind(kw_t0, kw_t1))
+      
+      states = sort(levels(data$label_t_0))
+      hp <- varImpHp[hpIdx, ]
+      
+      dataGen <- generateDataForHpOrderedLoss(
+        hp = hp, data = data, dataKw = dataKw, states = states, stateColumn = "label_t_0")
+      
+      dataVarImp <- dataGen$train_X[, ]
+      yCols <- colnames(dataGen$train_Y)
+      dataVarImp$Y <- as.factor(paste0(dataGen$train_Y[, yCols[1]], dataGen$train_Y[, yCols[2]]))
+      
+      # Just fit one model to the entire training data, once:
+      control <- caret::trainControl(method = "none")
+      viModel <- caret::train(Y~., data = dataVarImp, method="rf", trControl = control)
+      vi <- caret::varImp(viModel)
+      vi$importance$Predictor <- rownames(vi$importance)
+      vi$importance <- vi$importance[order(-vi$importance$Overall), ]
+      
+      vi$importance$hpIdx <- hpIdx
+      vi$importance$resampleSeed <- hp$resampleSeed
+      vi$importance$oversample <- hp$oversample
+      vi$importance$useKeywords <- hp$useKeywords
+      vi$importance$useDatatype <- hp$useDatatype
+      vi$importance$dens.fct <- hp$dens.fct
+      
+      return(vi$importance)
+    }
+  })
+  
+  #temp <- olVarImp
+  #olVarImp <- list()
+  #for (l in temp) {
+  #}
+  
+  saveRDS(olVarImp, varImpFile)
+}
+```
+
+
 ```{r}
 # Slightly over-commit to keep it busy
 doWithParallelCluster(numCores = as.integer(1.15 * parallel::detectCores()), expr = {
