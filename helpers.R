@@ -957,7 +957,7 @@ evaluateHpOrderedLoss <- function(hp, data, dataKw, states, stateColumn, m1Epoch
   
   start_three <- as.numeric(Sys.time())
   m1Fit <- tryCatch({
-    if (is.data.frame(varImps) && ncol(data$train_X) > hp$maxVars) {
+    if (is.data.frame(varImps) && ncol(data$train_X) > hp$maxVars && (hp$useDatatype %in% c("both", "both_scaled"))) {
       # Cut down the dimensionality of the data and use the
       # n most important predictors.
       

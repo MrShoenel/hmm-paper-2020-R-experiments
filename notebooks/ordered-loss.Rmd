@@ -88,7 +88,7 @@ olHp <- expand.grid(
   precision = c(5e-3),
   patience = c(5),
   # Using variable importance, select the n most important variables:
-  maxVars = c(60)
+  maxVars = c(80)
 )
 
 # Attach an ID to each hyperparameter set:
