@@ -310,7 +310,7 @@ doWithParallelCluster(numCores = numCores, expr = {
         
         
         dfMeta <- NULL
-        if (is.list(result$meta)) {
+        if (is.list(result$meta) && length(result$meta) > 0) {
           dfMeta <- cbind(
             data.frame(hpId = hpId),
             as.data.frame(result$meta))
