@@ -183,7 +183,7 @@ temp %>% arrange(obsId, -pred_sum)
 
 ## Test
 
-Let's try to learn from these results. The first test is to concatenate all preditions for one sample (transformed using all estimators) and just use a one-hot activation.
+Let's try to learn from these results. The first test is to concatenate all predictions for one sample (transformed using all estimators) and just use a one-hot activation.
 
 ```{r}
 predAsOneHot <- matrix(nrow = length(unique(temp$obsId)), ncol = 49)
