@@ -10,6 +10,7 @@ vignettes/*
 
 # Session Data files
 .RData
+*.nb.html
 
 # User-specific files
 .Ruserdata
@@ -46,3 +47,6 @@ vignettes/*.pdf
 .Rproj.user
 packrat/lib*/
 packrat/src/
+
+# Python
+.ipynb_checkpoints
