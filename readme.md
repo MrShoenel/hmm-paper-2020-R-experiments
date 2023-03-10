@@ -1,4 +1,5 @@
-# HMM Experiments
+# HMM Experiments [![DOI](https://zenodo.org/badge/260986338.svg)](https://zenodo.org/badge/latestdoi/260986338)
+
 
 This repository holds data, experimental setups, and code closely related to the paper ___"Exploiting Relations, Sojourn-Times and Joint Conditional Probabilities for Automated Commit Classification"___.
 
